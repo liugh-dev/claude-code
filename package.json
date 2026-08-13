@@ -66,6 +66,8 @@
     "docs:dev": "npx mintlify dev",
     "typecheck": "tsc --noEmit",
     "precheck": "bun run typecheck && bun run check:fix && bun test",
+    "compile": "bun run compile.ts",
+    "compile:all": "bun run compile.ts --all",
     "rcs": "bun run scripts/rcs.ts"
   },
   "dependencies": {
