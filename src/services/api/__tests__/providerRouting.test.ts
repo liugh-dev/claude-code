@@ -196,6 +196,41 @@ describe('dispatchToProviderInstance', () => {
     expect(args.options.model).toBe('opencode-go:glm-5.2')
   })
 
+  test('strips [1m]/[2m] suffixes from the modelId before dispatch', async () => {
+    calls.openai = []
+    await drain(
+      dispatchToProviderInstance(
+        {
+          provider: makeProvider('opencode-go', 'openai-compat'),
+          modelId: 'glm-5.2[1m]',
+        },
+        makeArgs('opencode-go:glm-5.2[1m]'),
+      ),
+    )
+    expect(calls.openai[0]!.options.model).toBe('glm-5.2')
+
+    calls.gemini = []
+    await drain(
+      dispatchToProviderInstance(
+        {
+          provider: makeProvider('my-gemini', 'gemini'),
+          modelId: 'gem-2.5-pro[1M]',
+        },
+        makeArgs('my-gemini:gem-2.5-pro[1M]'),
+      ),
+    )
+    expect(calls.gemini[0]!.options.model).toBe('gem-2.5-pro')
+
+    calls.grok = []
+    await drain(
+      dispatchToProviderInstance(
+        { provider: makeProvider('my-grok', 'grok'), modelId: 'grok-4[2m]' },
+        makeArgs('my-grok:grok-4[2m]'),
+      ),
+    )
+    expect(calls.grok[0]!.options.model).toBe('grok-4')
+  })
+
   test('throws for anthropic-kind refs (handled by the native path)', async () => {
     const ref = makeRef('corp-anthropic', 'anthropic')
     await expect(

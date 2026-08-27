@@ -11,16 +11,14 @@ import {
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { logMock } from '../../../../tests/mocks/log.js'
+import { settingsMock } from '../../../../tests/mocks/settings.js'
 
 // Mock side-effectful modules before any import that transitively loads them.
 import { mock } from 'bun:test'
 
 mock.module('src/utils/log.ts', logMock)
 mock.module('bun:bundle', () => ({ feature: () => false }))
-mock.module('src/utils/settings/settings.js', () => ({
-  getSettings_DEPRECATED: () => ({}),
-  updateSettingsForSource: () => {},
-}))
+mock.module('src/utils/settings/settings.js', settingsMock)
 
 let tmpDir: string
 

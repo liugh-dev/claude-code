@@ -1,13 +1,11 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import type { ProviderConfig } from '../types.js'
 import { logMock } from '../../../../tests/mocks/log.js'
+import { settingsMock } from '../../../../tests/mocks/settings.js'
 
 mock.module('src/utils/log.ts', logMock)
 mock.module('bun:bundle', () => ({ feature: () => false }))
-mock.module('src/utils/settings/settings.js', () => ({
-  getSettings_DEPRECATED: () => ({}),
-  updateSettingsForSource: () => {},
-}))
+mock.module('src/utils/settings/settings.js', settingsMock)
 
 const TEST_PROVIDERS: ProviderConfig[] = [
   {

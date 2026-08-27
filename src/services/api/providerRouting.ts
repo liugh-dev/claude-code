@@ -108,7 +108,15 @@ export async function* dispatchToProviderInstance(
   StreamEvent | AssistantMessage | SystemAPIErrorMessage,
   void
 > {
-  const options: Options = { ...args.options, model: ref.modelId }
+  // [1m]/[2m] are client-side context-window opt-ins, not part of the model
+  // id. The env-driven paths strip them inside resolve*Model(); the override
+  // path skips those functions, so strip here instead. Local 1M decisions
+  // (context window, autocompact) read the un-stripped model string upstream
+  // and are unaffected.
+  const options: Options = {
+    ...args.options,
+    model: ref.modelId.replace(/\[(1|2)m\]$/i, ''),
+  }
   switch (ref.provider.kind) {
     case 'openai-compat': {
       const { queryModelOpenAI } = await import('./openai/index.js')

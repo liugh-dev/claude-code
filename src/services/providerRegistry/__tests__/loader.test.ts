@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { logMock } from '../../../../tests/mocks/log.js'
+import { settingsMock } from '../../../../tests/mocks/settings.js'
 
 // Must mock log before any import that transitively loads log.ts
 mock.module('src/utils/log.ts', logMock)
@@ -11,10 +12,7 @@ mock.module('src/utils/log.ts', logMock)
 mock.module('bun:bundle', () => ({ feature: () => false }))
 
 // settings.js must be mocked to cut bootstrap chain
-mock.module('src/utils/settings/settings.js', () => ({
-  getSettings_DEPRECATED: () => ({}),
-  updateSettingsForSource: () => {},
-}))
+mock.module('src/utils/settings/settings.js', settingsMock)
 
 let tmpDir: string
 

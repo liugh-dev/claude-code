@@ -1,15 +1,13 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { logMock } from '../../../../tests/mocks/log.js'
 import { debugMock } from '../../../../tests/mocks/debug.js'
+import { settingsMock } from '../../../../tests/mocks/settings.js'
 
 // Mock side-effectful modules before any import that transitively loads them
 mock.module('src/utils/log.ts', logMock)
 mock.module('src/utils/debug.ts', debugMock)
 mock.module('bun:bundle', () => ({ feature: () => false }))
-mock.module('src/utils/settings/settings.js', () => ({
-  getSettings_DEPRECATED: () => ({}),
-  updateSettingsForSource: () => {},
-}))
+mock.module('src/utils/settings/settings.js', settingsMock)
 
 import { buildModelsUrl, fetchProviderModels } from '../fetchModels.js'
 import type { ProviderConfig } from '../types.js'
