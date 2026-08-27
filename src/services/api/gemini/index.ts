@@ -21,13 +21,17 @@ import type { SDKAssistantMessageError } from '../../../entrypoints/agentSdkType
 import type { SystemPrompt } from '../../../utils/systemPromptType.js'
 import type { ThinkingConfig } from '../../../utils/thinking.js'
 import type { Options } from '../claude.js'
+import type { ProviderConfig } from '../../providerRegistry/types.js'
 import { recordLLMObservation } from '../../../services/langfuse/tracing.js'
 import {
   convertMessagesToLangfuse,
   convertOutputToLangfuse,
   convertToolsToLangfuse,
 } from '../../../services/langfuse/convert.js'
-import { streamGeminiGenerateContent } from './client.js'
+import {
+  assertValidGeminiModelId,
+  streamGeminiGenerateContent,
+} from './client.js'
 import {
   anthropicMessagesToGemini,
   resolveGeminiModel,
@@ -44,12 +48,22 @@ export async function* queryModelGemini(
   signal: AbortSignal,
   options: Options,
   thinkingConfig: ThinkingConfig,
+  providerOverride?: ProviderConfig,
 ): AsyncGenerator<
   StreamEvent | AssistantMessage | SystemAPIErrorMessage,
   void
 > {
   try {
-    const geminiModel = resolveGeminiModel(options.model)
+    // With a provider override the model string is already a concrete model
+    // id for that instance — skip the GEMINI_* env-based model mapping.
+    const geminiModel = providerOverride
+      ? options.model
+      : resolveGeminiModel(options.model)
+    if (providerOverride) {
+      // Fail fast on traversal/absolute model ids from providers.json before
+      // doing any conversion work (client.ts re-validates at request time).
+      assertValidGeminiModelId(geminiModel)
+    }
     const messagesForAPI = normalizeMessagesForAPI(messages, tools)
 
     const toolSchemas = await Promise.all(
@@ -85,6 +99,7 @@ export async function* queryModelGemini(
       model: geminiModel,
       signal,
       fetchOverride: options.fetchOverride as typeof fetch | undefined,
+      providerOverride,
       body: {
         contents,
         ...(systemInstruction && { systemInstruction }),

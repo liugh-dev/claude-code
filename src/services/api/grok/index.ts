@@ -15,7 +15,8 @@ import type {
   ChatCompletionChunk,
   ChatCompletionCreateParamsStreaming,
 } from 'openai/resources/chat/completions/completions.mjs'
-import { getGrokClient } from './client.js'
+import { getGrokClient, getGrokClientForProvider } from './client.js'
+import type { ProviderConfig } from '../../providerRegistry/types.js'
 import { updateOpenAIUsage } from '../openai/openaiShared.js'
 import {
   anthropicMessagesToOpenAI,
@@ -54,12 +55,17 @@ export async function* queryModelGrok(
   tools: Tools,
   signal: AbortSignal,
   options: Options,
+  providerOverride?: ProviderConfig,
 ): AsyncGenerator<
   StreamEvent | AssistantMessage | SystemAPIErrorMessage,
   void
 > {
   try {
-    const grokModel = resolveGrokModel(options.model)
+    // With a provider override the model string is already a concrete model
+    // id for that instance — skip the GROK_* env-based model mapping.
+    const grokModel = providerOverride
+      ? options.model
+      : resolveGrokModel(options.model)
     const messagesForAPI = normalizeMessagesForAPI(messages, tools)
 
     const toolSchemas = await Promise.all(
@@ -89,11 +95,17 @@ export async function* queryModelGrok(
     const openaiTools = anthropicToolsToOpenAI(standardTools)
     const openaiToolChoice = anthropicToolChoiceToOpenAI(options.toolChoice)
 
-    const client = getGrokClient({
-      maxRetries: 0,
-      fetchOverride: options.fetchOverride as typeof fetch | undefined,
-      source: options.querySource,
-    })
+    const client = providerOverride
+      ? getGrokClientForProvider(providerOverride, {
+          maxRetries: 0,
+          fetchOverride: options.fetchOverride as typeof fetch | undefined,
+          source: options.querySource,
+        })
+      : getGrokClient({
+          maxRetries: 0,
+          fetchOverride: options.fetchOverride as typeof fetch | undefined,
+          source: options.querySource,
+        })
 
     logForDebugging(
       `[Grok] Calling model=${grokModel}, messages=${openaiMessages.length}, tools=${openaiTools.length}`,

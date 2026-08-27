@@ -1,6 +1,10 @@
 import { parseSSEFrames } from 'src/cli/transports/SSETransport.js'
 import { errorMessage } from 'src/utils/errors.js'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
+import {
+  resolveApiKey,
+  type ProviderConfig,
+} from 'src/services/providerRegistry/types.js'
 import type {
   GeminiGenerateContentRequest,
   GeminiStreamChunk,
@@ -18,9 +22,46 @@ function getGeminiBaseUrl(): string {
   )
 }
 
+/**
+ * Resolve the base URL for a provider-registry gemini instance.
+ *
+ * providers.json stores the API root for gemini providers (default
+ * `https://generativelanguage.googleapis.com`); the streaming endpoint lives
+ * under `/v1beta`. If the configured baseUrl already ends with an API version
+ * segment (e.g. a proxy exposing `.../v1beta`), it is used as-is.
+ */
+function getGeminiProviderBaseUrl(provider: ProviderConfig): string {
+  const trimmed = provider.baseUrl.replace(/\/+$/, '')
+  return /\/v\d+(beta|alpha)?$/i.test(trimmed) ? trimmed : `${trimmed}/v1beta`
+}
+
+/**
+ * Validate a Gemini model id before it is interpolated into the request URL
+ * path. The model id becomes a URL path segment
+ * (`${baseUrl}/models/<id>:streamGenerateContent`), so a malicious or
+ * misconfigured providers.json entry containing '..' path segments or a
+ * leading '/' could escape the `/models/` prefix and hit arbitrary endpoints
+ * on the same origin (path traversal).
+ *
+ * Plain model names ('gemini-2.5-pro') and names that already carry the
+ * 'models/' resource prefix ('models/gemini-2.5-pro') are accepted.
+ */
+export function assertValidGeminiModelId(model: string): void {
+  if (model.startsWith('/')) {
+    throw new Error(
+      `Invalid Gemini model id ${JSON.stringify(model)}: must not start with '/'`,
+    )
+  }
+  if (model.split('/').includes('..')) {
+    throw new Error(
+      `Invalid Gemini model id ${JSON.stringify(model)}: must not contain '..' path segments`,
+    )
+  }
+}
+
 function getGeminiModelPath(model: string): string {
-  const normalized = model.replace(/^\/+/, '')
-  return normalized.startsWith('models/') ? normalized : `models/${normalized}`
+  assertValidGeminiModelId(model)
+  return model.startsWith('models/') ? model : `models/${model}`
 }
 
 export async function* streamGeminiGenerateContent(params: {
@@ -28,15 +69,22 @@ export async function* streamGeminiGenerateContent(params: {
   body: GeminiGenerateContentRequest
   signal: AbortSignal
   fetchOverride?: typeof fetch
+  providerOverride?: ProviderConfig
 }): AsyncGenerator<GeminiStreamChunk, void> {
   const fetchImpl = params.fetchOverride ?? fetch
-  const url = `${getGeminiBaseUrl()}/${getGeminiModelPath(params.model)}:streamGenerateContent?alt=sse`
+  const baseUrl = params.providerOverride
+    ? getGeminiProviderBaseUrl(params.providerOverride)
+    : getGeminiBaseUrl()
+  const apiKey = params.providerOverride
+    ? (resolveApiKey(params.providerOverride) ?? '')
+    : process.env.GEMINI_API_KEY || ''
+  const url = `${baseUrl}/${getGeminiModelPath(params.model)}:streamGenerateContent?alt=sse`
 
   const response = await fetchImpl(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-goog-api-key': process.env.GEMINI_API_KEY || '',
+      'x-goog-api-key': apiKey,
     },
     body: JSON.stringify(params.body),
     signal: params.signal,

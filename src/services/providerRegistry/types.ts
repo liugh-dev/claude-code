@@ -2,6 +2,7 @@ import { z } from 'zod'
 
 /**
  * Compat rule identifiers. Each maps to a CompatProfile in providerCompatMatrix.ts.
+ * Only meaningful for 'openai-compat' providers.
  */
 export const CompatRuleSchema = z.enum([
   'cerebras',
@@ -14,21 +15,43 @@ export const CompatRuleSchema = z.enum([
 export type CompatRule = z.infer<typeof CompatRuleSchema>
 
 /**
- * The only supported provider kind for PR-2. Future PR-3+ may add 'oauth', 'bedrock-compat', etc.
+ * Supported provider protocol kinds. Multiple instances of the same kind are
+ * allowed; zero instances of a kind is also fine.
  */
-export const ProviderKindSchema = z.literal('openai-compat')
+export const ProviderKindSchema = z.enum([
+  'openai-compat',
+  'gemini',
+  'grok',
+  'anthropic',
+])
 export type ProviderKind = z.infer<typeof ProviderKindSchema>
 
 /**
- * Zod schema for a single provider configuration entry.
+ * A remotely-fetched or manually-added model entry.
+ */
+export const ProviderModelSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1).optional(),
+})
+export type ProviderModel = z.infer<typeof ProviderModelSchema>
+
+/**
+ * Zod schema for a single provider configuration entry (providers.json v2).
  *
  * Rules:
- * - id: kebab-case identifier used in /provider use <id>
- * - kind: only 'openai-compat' in PR-2
+ * - id: kebab-case identifier, unique across providers. Used as the
+ *   `providerId` prefix in cross-provider model refs (`providerId:modelId`).
+ * - kind: protocol family, one of openai-compat | gemini | grok | anthropic
+ * - name: optional display name for UI
  * - baseUrl: full base URL including /v1 suffix if needed
- * - apiKeyEnv: name of the env var that holds the API key
- * - defaultModel: model string passed as OPENAI_MODEL
+ * - apiKey: API key stored directly in providers.json (file is chmod 600)
+ * - apiKeyEnv: legacy v1 indirection — name of env var holding the key.
+ *   resolveApiKey() prefers apiKey over the env var.
  * - compatRule: selects CompatProfile from providerCompatMatrix
+ *   (only meaningful for openai-compat)
+ * - models: remotely fetched or manually added model list
+ * - defaultModel: provider-level default model id
+ * - modelsFetchedAt: ISO date of the last successful /models fetch
  */
 export const ProviderConfigSchema = z.object({
   id: z
@@ -36,16 +59,40 @@ export const ProviderConfigSchema = z.object({
     .min(1)
     .regex(/^[a-z0-9-]+$/, 'id must be kebab-case'),
   kind: ProviderKindSchema,
+  name: z.string().min(1).optional(),
   baseUrl: z.string().url(),
-  apiKeyEnv: z.string().min(1),
-  defaultModel: z.string().min(1),
-  compatRule: CompatRuleSchema,
+  apiKey: z.string().min(1).optional(),
+  apiKeyEnv: z.string().min(1).optional(),
+  compatRule: CompatRuleSchema.optional(),
+  models: z.array(ProviderModelSchema).optional(),
+  defaultModel: z.string().min(1).optional(),
+  modelsFetchedAt: z.string().min(1).optional(),
 })
 
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>
 
 /**
- * Schema for the entire ~/.claude/providers.json file.
- * Top-level must be an array of ProviderConfig.
+ * Schema for ~/.claude/providers.json in v2 format.
  */
-export const ProvidersFileSchema = z.array(ProviderConfigSchema)
+export const ProvidersFileSchema = z.object({
+  version: z.literal(2),
+  providers: z.array(ProviderConfigSchema),
+})
+export type ProvidersFile = z.infer<typeof ProvidersFileSchema>
+
+/**
+ * Legacy v1 format: the top level was a bare array of provider configs.
+ * Used only to detect and migrate old files on load.
+ */
+export const ProvidersFileV1Schema = z.array(ProviderConfigSchema)
+export type ProvidersFileV1 = z.infer<typeof ProvidersFileV1Schema>
+
+/**
+ * Resolve the effective API key for a provider.
+ * Directly-stored apiKey wins over the legacy apiKeyEnv indirection.
+ */
+export function resolveApiKey(provider: ProviderConfig): string | undefined {
+  if (provider.apiKey) return provider.apiKey
+  if (provider.apiKeyEnv) return process.env[provider.apiKeyEnv]
+  return undefined
+}

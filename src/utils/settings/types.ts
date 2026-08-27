@@ -376,6 +376,16 @@ export const SettingsSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Override the default model used by Claude Code'),
+      modelSlots: z
+        .object({
+          opus: z.string().optional(),
+          sonnet: z.string().optional(),
+          haiku: z.string().optional(),
+        })
+        .optional()
+        .describe(
+          'Per-tier model slot overrides. Values may be plain model IDs or cross-provider refs ("providerId:modelId" from providers.json). Checked before the environment-variable chain in getDefault*Model().',
+        ),
       // Enterprise allowlist of models
       availableModels: z
         .array(z.string())

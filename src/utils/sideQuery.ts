@@ -14,7 +14,17 @@ import {
 import { logEvent } from '../services/analytics/index.js'
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../services/analytics/metadata.js'
 import { getAPIMetadata } from '../services/api/claude.js'
-import { getAnthropicClient } from '../services/api/client.js'
+import {
+  getAnthropicClient,
+  type AnthropicClientOverride,
+} from '../services/api/client.js'
+import { resolveModelRef } from '../services/providerRegistry/modelRef.js'
+import { applyCompatRule } from '../services/providerRegistry/providerCompatMatrix.js'
+import { assertValidGeminiModelId } from '../services/api/gemini/client.js'
+import {
+  resolveApiKey,
+  type ProviderConfig,
+} from '../services/providerRegistry/types.js'
 import {
   createTrace,
   createChildSpan,
@@ -32,8 +42,14 @@ import { logForDebugging } from './debug.js'
 import { errorMessage } from './errors.js'
 import { getAPIProvider } from './model/providers.js'
 import { normalizeModelStringForAPI } from './model/model.js'
-import { getOpenAIClient } from '../services/api/openai/client.js'
-import { getGrokClient } from '../services/api/grok/client.js'
+import {
+  getOpenAIClient,
+  getOpenAIClientForProvider,
+} from '../services/api/openai/client.js'
+import {
+  getGrokClient,
+  getGrokClientForProvider,
+} from '../services/api/grok/client.js'
 import { isChatGPTAuthEnabled } from '../services/api/openai/chatgptAuth.js'
 import {
   adaptResponsesStreamToAnthropic,
@@ -121,6 +137,18 @@ function extractSystemText(system?: string | TextBlockParam[]): string {
 }
 
 /**
+ * Resolve the base URL for a registry gemini-kind provider instance.
+ * providers.json stores the API root; the generateContent endpoint lives
+ * under /v1beta. If the configured baseUrl already ends with an API version
+ * segment, it is used as-is. Mirrors getGeminiProviderBaseUrl in
+ * services/api/gemini/client.ts (kept local — that module is streaming-only).
+ */
+function getGeminiProviderBaseUrl(baseUrl: string): string {
+  const trimmed = baseUrl.replace(/\/+$/, '')
+  return /\/v\d+(beta|alpha)?$/i.test(trimmed) ? trimmed : `${trimmed}/v1beta`
+}
+
+/**
  * Convert Anthropic MessageParam[] to a list of {role, content} objects
  * suitable for OpenAI-compatible chat.completions APIs.
  */
@@ -192,24 +220,56 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
     stop_sequences,
   } = opts
 
-  const provider = getAPIProvider()
-  if (provider === 'openai' || provider === 'grok') {
-    return sideQueryViaOpenAICompatible(opts)
+  // Cross-provider routing: a 'providerId:modelId' model string resolves to a
+  // configured provider instance (providers.json). Non-Anthropic kinds route
+  // to their side-query adapter with the provider's own client and a verbatim
+  // modelId; anthropic-kind stays on the native path below with a client
+  // override + stripped modelId. Unresolved strings keep legacy env routing.
+  const modelRef = resolveModelRef(model)
+  if (modelRef && modelRef.provider.kind !== 'anthropic') {
+    const strippedOpts = { ...opts, model: modelRef.modelId }
+    switch (modelRef.provider.kind) {
+      case 'openai-compat':
+      case 'grok':
+        return sideQueryViaOpenAICompatible(strippedOpts, modelRef.provider)
+      case 'gemini':
+        return sideQueryViaGemini(strippedOpts, modelRef.provider)
+    }
   }
-  if (provider === 'gemini') {
-    return sideQueryViaGemini(opts)
+  const anthropicClientOverride: AnthropicClientOverride | undefined =
+    modelRef && modelRef.provider.kind === 'anthropic'
+      ? {
+          baseUrl: modelRef.provider.baseUrl,
+          apiKey: resolveApiKey(modelRef.provider),
+          providerId: modelRef.provider.id,
+        }
+      : undefined
+  const effectiveModel = modelRef ? modelRef.modelId : model
+
+  const provider = getAPIProvider()
+  // A registry anthropic-kind override pins this request to the native
+  // Anthropic path — env-driven openai/grok/gemini routing is disabled while
+  // it is active (mirrors resolveEnvProviderRouting in the main loop).
+  if (!anthropicClientOverride) {
+    if (provider === 'openai' || provider === 'grok') {
+      return sideQueryViaOpenAICompatible(opts)
+    }
+    if (provider === 'gemini') {
+      return sideQueryViaGemini(opts)
+    }
   }
 
   const client = await getAnthropicClient({
     maxRetries,
-    model,
+    model: effectiveModel,
     source: 'side_query',
+    ...(anthropicClientOverride && { override: anthropicClientOverride }),
   })
-  const betas = [...getModelBetas(model)]
+  const betas = [...getModelBetas(effectiveModel)]
   // Add structured-outputs beta if using output_format and provider supports it
   if (
     output_format &&
-    modelSupportsStructuredOutputs(model) &&
+    modelSupportsStructuredOutputs(effectiveModel) &&
     !betas.includes(STRUCTURED_OUTPUTS_BETA_HEADER)
   ) {
     betas.push(STRUCTURED_OUTPUTS_BETA_HEADER)
@@ -250,9 +310,13 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
     }
   }
 
-  const normalizedModel = normalizeModelStringForAPI(model)
+  const normalizedModel = normalizeModelStringForAPI(effectiveModel)
   const start = Date.now()
   const traceName = `side-query:${opts.querySource}`
+  // For registry-routed requests, attribute the provider instance id in
+  // Langfuse instead of the (irrelevant) env-selected provider.
+  const langfuseProvider =
+    anthropicClientOverride && modelRef ? modelRef.provider.id : provider
 
   // When parentSpan is provided, create a child span nested under the
   // main agent trace; otherwise create a standalone root trace.
@@ -273,7 +337,7 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
         name: traceName,
         sessionId: getSessionId(),
         model: normalizedModel,
-        provider,
+        provider: langfuseProvider,
         querySource: opts.querySource,
       })
     : opts.querySource === 'auto_mode'
@@ -281,7 +345,7 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
       : createTrace({
           sessionId: getSessionId(),
           model: normalizedModel,
-          provider,
+          provider: langfuseProvider,
           name: traceName,
           querySource: opts.querySource,
         })
@@ -349,7 +413,7 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
   ] as unknown as Parameters<typeof convertOutputToLangfuse>[0]
   recordLLMObservation(langfuseTrace, {
     model: normalizedModel,
-    provider,
+    provider: langfuseProvider,
     input: convertMessagesToLangfuse(
       wrappedInput,
       systemBlocks.length > 0 ? systemBlocks.map(b => b.text) : undefined,
@@ -631,6 +695,7 @@ async function sideQueryViaChatGPTResponses(
  */
 async function sideQueryViaOpenAICompatible(
   opts: SideQueryOptions,
+  providerOverride?: ProviderConfig,
 ): Promise<BetaMessage> {
   const {
     model,
@@ -646,9 +711,11 @@ async function sideQueryViaOpenAICompatible(
   const provider = getAPIProvider()
   const normalizedModel = normalizeModelStringForAPI(model)
 
-  // Resolve model name per provider
-  const openaiModel =
-    provider === 'grok'
+  // Resolve model name per provider. A registry provider ref carries a
+  // verbatim model id — skip env-based model mapping entirely.
+  const openaiModel = providerOverride
+    ? normalizedModel
+    : provider === 'grok'
       ? resolveGrokModel(normalizedModel)
       : resolveOpenAIModel(normalizedModel)
 
@@ -675,7 +742,9 @@ async function sideQueryViaOpenAICompatible(
     : undefined
 
   // ChatGPT subscription auth: use Responses API + OAuth, never empty API key.
-  if (provider === 'openai' && isChatGPTAuthEnabled()) {
+  // Only reachable on the env-driven official-OpenAI path — registry provider
+  // instances always authenticate via their own apiKey.
+  if (!providerOverride && provider === 'openai' && isChatGPTAuthEnabled()) {
     return sideQueryViaChatGPTResponses(
       opts,
       openaiModel,
@@ -685,10 +754,19 @@ async function sideQueryViaOpenAICompatible(
     )
   }
 
-  // API-key / OpenAI-compatible / Grok: Chat Completions
+  // API-key / OpenAI-compatible / Grok: Chat Completions. Registry provider
+  // instances use the per-provider client pool (baseUrl/apiKey from
+  // providers.json, never from OPENAI_*/GROK_* env vars).
   // eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
-  const client: import('openai').default =
-    provider === 'grok'
+  const client: import('openai').default = providerOverride
+    ? providerOverride.kind === 'grok'
+      ? getGrokClientForProvider(providerOverride, {
+          maxRetries: opts.maxRetries ?? 2,
+        })
+      : getOpenAIClientForProvider(providerOverride, {
+          maxRetries: opts.maxRetries ?? 2,
+        })
+    : provider === 'grok'
       ? getGrokClient({ maxRetries: opts.maxRetries ?? 2 })
       : getOpenAIClient({ maxRetries: opts.maxRetries ?? 2 })
 
@@ -700,7 +778,7 @@ async function sideQueryViaOpenAICompatible(
     max_tokens,
   }
   const promptCacheKey =
-    provider === 'openai'
+    !providerOverride && provider === 'openai'
       ? getOfficialOpenAIPromptCacheKey(
           process.env.OPENAI_BASE_URL,
           getSessionId(),
@@ -713,8 +791,13 @@ async function sideQueryViaOpenAICompatible(
     if (openaiToolChoice) requestParams.tool_choice = openaiToolChoice
   }
 
+  // Parity with the main-loop path: strip fields strict endpoints reject.
+  const finalParams = providerOverride?.compatRule
+    ? applyCompatRule(requestParams, providerOverride.compatRule)
+    : requestParams
+
   const response = await client.chat.completions.create(
-    requestParams as unknown as import('openai/resources/chat/completions/completions.mjs').ChatCompletionCreateParamsNonStreaming,
+    finalParams as unknown as import('openai/resources/chat/completions/completions.mjs').ChatCompletionCreateParamsNonStreaming,
     { signal },
   )
 
@@ -813,6 +896,7 @@ async function sideQueryViaOpenAICompatible(
  */
 async function sideQueryViaGemini(
   opts: SideQueryOptions,
+  providerOverride?: ProviderConfig,
 ): Promise<BetaMessage> {
   const {
     model,
@@ -826,7 +910,12 @@ async function sideQueryViaGemini(
   } = opts
 
   const normalizedModel = normalizeModelStringForAPI(model)
-  const geminiModel = resolveGeminiModel(normalizedModel)
+  // A registry provider ref carries a verbatim model id — skip env mapping.
+  const geminiModel = providerOverride
+    ? normalizedModel
+    : resolveGeminiModel(normalizedModel)
+  // Parity with the streaming path: reject path-traversal in URL segments.
+  if (providerOverride) assertValidGeminiModelId(geminiModel)
 
   // Build Gemini contents from Anthropic MessageParam[]
   const contents: Array<{
@@ -870,8 +959,10 @@ async function sideQueryViaGemini(
     : undefined
 
   const baseUrl = (
-    process.env.GEMINI_BASE_URL ||
-    'https://generativelanguage.googleapis.com/v1beta'
+    providerOverride
+      ? getGeminiProviderBaseUrl(providerOverride.baseUrl)
+      : process.env.GEMINI_BASE_URL ||
+        'https://generativelanguage.googleapis.com/v1beta'
   ).replace(/\/+$/, '')
   const modelPath = geminiModel.startsWith('models/')
     ? geminiModel
@@ -907,7 +998,9 @@ async function sideQueryViaGemini(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-goog-api-key': process.env.GEMINI_API_KEY || '',
+      'x-goog-api-key': providerOverride
+        ? (resolveApiKey(providerOverride) ?? '')
+        : process.env.GEMINI_API_KEY || '',
     },
     body: JSON.stringify(body),
     signal,

@@ -1,4 +1,8 @@
 import OpenAI from 'openai'
+import {
+  resolveApiKey,
+  type ProviderConfig,
+} from 'src/services/providerRegistry/types.js'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
 
 /**
@@ -41,4 +45,60 @@ export function getGrokClient(options?: {
 
 export function clearGrokClientCache(): void {
   cachedClient = null
+}
+
+/**
+ * Instance pool for registry-based grok providers: providerId → OpenAI
+ * client. Separate from the env-driven singleton above so the legacy path
+ * is unaffected.
+ */
+const providerClients = new Map<string, OpenAI>()
+
+/** Clear the provider-instance client pool (tests / provider config change). */
+export function clearGrokProviderClientCache(): void {
+  providerClients.clear()
+}
+
+// When providers.json changes, cached clients keyed by providerId are
+// stale (old apiKey/baseUrl). Subscribe once so saveProviders() clears.
+import { onProvidersChanged } from '../../providerRegistry/loader.js'
+onProvidersChanged(() => {
+  providerClients.clear()
+})
+
+/**
+ * Build (or reuse) an OpenAI-compatible client for a configured grok-kind
+ * provider instance from providers.json. baseUrl and apiKey come from the
+ * provider config, never from GROK_* env vars.
+ *
+ * A caller-scoped fetchOverride is never pooled (it belongs to the caller).
+ */
+export function getGrokClientForProvider(
+  provider: ProviderConfig,
+  options?: {
+    maxRetries?: number
+    fetchOverride?: typeof fetch
+    source?: string
+  },
+): OpenAI {
+  if (!options?.fetchOverride) {
+    const cached = providerClients.get(provider.id)
+    if (cached) return cached
+  }
+
+  const client = new OpenAI({
+    apiKey: resolveApiKey(provider) ?? '',
+    baseURL: provider.baseUrl,
+    maxRetries: options?.maxRetries ?? 0,
+    timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
+    dangerouslyAllowBrowser: true,
+    fetchOptions: getProxyFetchOptions({ forAnthropicAPI: false }),
+    ...(options?.fetchOverride && { fetch: options.fetchOverride }),
+  })
+
+  if (!options?.fetchOverride) {
+    providerClients.set(provider.id, client)
+  }
+
+  return client
 }

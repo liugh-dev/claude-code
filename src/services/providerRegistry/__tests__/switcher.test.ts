@@ -126,4 +126,27 @@ describe('buildShellExportBlock', () => {
     expect(block).toContain('$DEEPSEEK_API_KEY')
     delete process.env['DEEPSEEK_API_KEY']
   })
+
+  test('when apiKey is set on provider, no OPENAI_API_KEY export is emitted (only a comment)', async () => {
+    const { switchProvider, buildShellExportBlock } = await import(
+      '../switcher.js'
+    )
+    const result = switchProvider('cerebras', [
+      {
+        id: 'cerebras',
+        kind: 'openai-compat',
+        baseUrl: 'https://api.cerebras.ai/v1',
+        apiKey: 'cerebras-direct-key',
+        defaultModel: 'llama-3.3-70b',
+        compatRule: 'cerebras',
+      },
+    ])
+    const block = buildShellExportBlock(result)
+    // No literal export of OPENAI_API_KEY (only a comment was added).
+    expect(block).not.toMatch(/^export OPENAI_API_KEY=/m)
+    // The comment explaining where the key lives IS present.
+    expect(block).toContain('read from ~/.claude/providers.json')
+    // The literal key must never be echoed.
+    expect(block).not.toContain('cerebras-direct-key')
+  })
 })

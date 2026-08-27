@@ -24,7 +24,12 @@ import {
 import { jsonStringify } from '../utils/slowOperations.js'
 import { isToolReferenceBlock } from '../utils/searchExtraTools.js'
 import { getAPIMetadata, getExtraBodyParams } from './api/claude.js'
-import { getAnthropicClient } from './api/client.js'
+import {
+  getAnthropicClient,
+  type AnthropicClientOverride,
+} from './api/client.js'
+import { resolveModelRef } from './providerRegistry/modelRef.js'
+import { resolveApiKey } from './providerRegistry/types.js'
 import {
   createTrace,
   endTrace,
@@ -156,13 +161,34 @@ export async function countMessagesTokensWithAPI(
       }
 
       const model = getMainLoopModel()
-      const betas = getModelBetas(model)
+
+      // Cross-provider ref ('providerId:modelId' from providers.json).
+      // Non-Anthropic providers expose no countTokens endpoint — skip the API
+      // call and use the local estimate (same as the gemini branch above).
+      // Anthropic-kind instances use a client override + the stripped modelId.
+      const modelRef = resolveModelRef(model)
+      if (modelRef && modelRef.provider.kind !== 'anthropic') {
+        return roughTokenCountEstimationForAPIRequest(messages, tools)
+      }
+      const anthropicClientOverride: AnthropicClientOverride | undefined =
+        modelRef
+          ? {
+              baseUrl: modelRef.provider.baseUrl,
+              apiKey: resolveApiKey(modelRef.provider),
+              providerId: modelRef.provider.id,
+            }
+          : undefined
+      const effectiveModel = modelRef ? modelRef.modelId : model
+      const betas = getModelBetas(effectiveModel)
       const containsThinking = hasThinkingBlocks(messages)
 
-      if (provider === 'bedrock') {
+      // A registry anthropic-kind override pins this request to the native
+      // Anthropic path — Bedrock-specific shaping is disabled while it is
+      // active (mirrors resolveEnvProviderRouting in the main loop).
+      if (provider === 'bedrock' && !anthropicClientOverride) {
         // @anthropic-sdk/bedrock-sdk doesn't support countTokens currently
         return countTokensWithBedrock({
-          model: normalizeModelStringForAPI(model),
+          model: normalizeModelStringForAPI(effectiveModel),
           messages,
           tools,
           betas,
@@ -172,17 +198,18 @@ export async function countMessagesTokensWithAPI(
 
       const anthropic = await getAnthropicClient({
         maxRetries: 1,
-        model,
+        model: effectiveModel,
         source: 'count_tokens',
+        ...(anthropicClientOverride && { override: anthropicClientOverride }),
       })
 
       const filteredBetas =
-        getAPIProvider() === 'vertex'
+        getAPIProvider() === 'vertex' && !anthropicClientOverride
           ? betas.filter(b => VERTEX_COUNT_TOKENS_ALLOWED_BETAS.has(b))
           : betas
 
       const response = await anthropic.beta.messages.countTokens({
-        model: normalizeModelStringForAPI(model),
+        model: normalizeModelStringForAPI(effectiveModel),
         messages:
           // When we pass tools and no messages, we need to pass a dummy message
           // to get an accurate tool token count.

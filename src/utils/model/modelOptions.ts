@@ -38,6 +38,8 @@ import {
   CHATGPT_CODEX_MODEL_OPTIONS,
   isChatGPTAuthMode,
 } from './chatgptModels.js'
+import { loadProviders } from '../../services/providerRegistry/loader.js'
+import type { ProviderConfig } from '../../services/providerRegistry/types.js'
 
 // @[MODEL LAUNCH]: Update all the available and default model option strings below.
 
@@ -358,6 +360,37 @@ function getChatGPTCodexModelOptions(): ModelOption[] {
   ]
 }
 
+/**
+ * Build /model picker options for each configured provider instance that has
+ * a model list (remotely fetched or manually added). Each option value is a
+ * cross-provider model reference `providerId:modelId` and is routed
+ * per-request by resolveModelRef() in the API layer.
+ *
+ * Grouping is expressed via a `[providerId] ` label prefix because ModelOption
+ * does not carry a group/section field. Only providers with a non-empty
+ * `models` array contribute options; providers without `models` (including
+ * the four built-in defaults) contribute nothing.
+ */
+export function getProviderModelOptions(
+  providers: ProviderConfig[],
+): ModelOption[] {
+  const options: ModelOption[] = []
+  for (const provider of providers) {
+    if (!provider.models || provider.models.length === 0) continue
+    const providerLabel = provider.name ?? provider.id
+    for (const model of provider.models) {
+      const ref = `${provider.id}:${model.id}`
+      options.push({
+        value: ref,
+        label: `[${provider.id}] ${model.name ?? model.id}`,
+        description: `${providerLabel} (${provider.kind})`,
+        descriptionForModel: `${model.name ?? model.id} via ${providerLabel} (${ref})`,
+      })
+    }
+  }
+  return options
+}
+
 // @[MODEL LAUNCH]: Update the model picker lists below to include/reorder options for the new model.
 // Each user tier (ant, Max/Team Premium, Pro/Team Standard/Enterprise, PAYG 1P, PAYG 3P) has its own list.
 function getModelOptionsBase(fastMode = false): ModelOption[] {
@@ -572,6 +605,15 @@ export function getModelOptions(fastMode = false): ModelOption[] {
 
   // Append additional model options fetched during bootstrap
   for (const opt of getGlobalConfig().additionalModelOptionsCache ?? []) {
+    if (!options.some(existing => existing.value === opt.value)) {
+      options.push(opt)
+    }
+  }
+
+  // Append cross-provider model options (providerId:modelId) for every
+  // configured provider instance that has a model list. The per-request
+  // router (resolveModelRef) resolves these at dispatch time.
+  for (const opt of getProviderModelOptions(loadProviders())) {
     if (!options.some(existing => existing.value === opt.value)) {
       options.push(opt)
     }

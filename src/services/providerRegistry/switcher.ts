@@ -1,5 +1,5 @@
 import { findProvider, loadProviders } from './loader.js'
-import type { ProviderConfig } from './types.js'
+import { resolveApiKey, type ProviderConfig } from './types.js'
 
 export interface SwitchProviderResult {
   /**
@@ -52,10 +52,12 @@ export function switchProvider(
   const env: Record<string, string> = {
     CLAUDE_CODE_USE_OPENAI: '1',
     OPENAI_BASE_URL: found.baseUrl,
-    OPENAI_MODEL: found.defaultModel,
     // The value is the env var name that holds the key, not the key itself.
     // Shell snippet: export OPENAI_API_KEY=$CEREBRAS_API_KEY
     // We return the recommended export, but the actual value depends on user env.
+  }
+  if (found.defaultModel) {
+    env['OPENAI_MODEL'] = found.defaultModel
   }
 
   // Include the api key env var name so callers can construct the shell snippet.
@@ -78,11 +80,18 @@ export function switchProvider(
     )
   }
 
-  if (!process.env[found.apiKeyEnv]) {
-    warnings.push(
-      `${found.apiKeyEnv} is not set in the current environment. ` +
-        `Set it before starting Claude Code: export ${found.apiKeyEnv}=<your-api-key>`,
-    )
+  if (!resolveApiKey(found)) {
+    if (found.apiKeyEnv) {
+      warnings.push(
+        `${found.apiKeyEnv} is not set in the current environment. ` +
+          `Set it before starting Claude Code: export ${found.apiKeyEnv}=<your-api-key>`,
+      )
+    } else {
+      warnings.push(
+        `No API key configured for provider "${found.id}". ` +
+          'Add an apiKey in ~/.claude/providers.json or set apiKeyEnv.',
+      )
+    }
   }
 
   return { env, warnings, provider: found }
@@ -104,8 +113,21 @@ export function buildShellExportBlock(result: SwitchProviderResult): string {
   const lines: string[] = [
     `export CLAUDE_CODE_USE_OPENAI=${env['CLAUDE_CODE_USE_OPENAI'] ?? '1'}`,
     `export OPENAI_BASE_URL=${env['OPENAI_BASE_URL'] ?? provider.baseUrl}`,
-    `export OPENAI_API_KEY=$${provider.apiKeyEnv}`,
-    `export OPENAI_MODEL=${env['OPENAI_MODEL'] ?? provider.defaultModel}`,
   ]
+  if (provider.apiKeyEnv) {
+    lines.push(`export OPENAI_API_KEY=$${provider.apiKeyEnv}`)
+  } else if (provider.apiKey) {
+    // The key is stored directly in providers.json (apiKey field). Never
+    // echo the literal value — the client resolves it from providers.json
+    // at runtime via resolveApiKey(provider). Inform the user via a
+    // comment so they don't try to export it from their shell.
+    lines.push(
+      '# OPENAI_API_KEY is read from ~/.claude/providers.json at runtime',
+    )
+  }
+  const model = env['OPENAI_MODEL'] ?? provider.defaultModel
+  if (model) {
+    lines.push(`export OPENAI_MODEL=${model}`)
+  }
   return lines.join('\n')
 }

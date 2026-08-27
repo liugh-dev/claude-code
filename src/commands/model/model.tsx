@@ -26,6 +26,7 @@ import {
 } from '../../utils/model/model.js';
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js';
 import { validateModel } from '../../utils/model/validateModel.js';
+import { resolveModelRef } from '../../services/providerRegistry/modelRef.js';
 
 function ModelPickerWrapper({
   onDone,
@@ -152,6 +153,17 @@ function SetModelAndClose({
 
       // Skip validation for known aliases - they're predefined and should work
       if (isKnownAlias(model)) {
+        setModel(model);
+        return;
+      }
+
+      // Cross-provider model refs (providerId:modelId) are validated against
+      // the provider registry instead of an API probe. Trust the registry
+      // entry the user (or /providers) configured; the API layer's
+      // resolveModelRef() will dispatch to the matching provider at request
+      // time. This also avoids a probe call against the current (possibly
+      // firstParty) provider which would 404 on an unknown model id.
+      if (resolveModelRef(model)) {
         setModel(model);
         return;
       }

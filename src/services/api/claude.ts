@@ -89,6 +89,7 @@ import {
   getSmallFastModel,
   isNonCustomOpusModel,
 } from '../../utils/model/model.js'
+import { getModelStrings } from '../../utils/model/modelStrings.js'
 import {
   asSystemPrompt,
   type SystemPrompt,
@@ -237,7 +238,18 @@ import {
   convertToolsToLangfuse,
 } from '../langfuse/convert.js'
 import { withStreamingVCR, withVCR } from '../vcr.js'
-import { CLIENT_REQUEST_ID_HEADER, getAnthropicClient } from './client.js'
+import {
+  CLIENT_REQUEST_ID_HEADER,
+  type AnthropicClientOverride,
+  getAnthropicClient,
+} from './client.js'
+import {
+  dispatchToProviderInstance,
+  resolveEnvProviderRouting,
+  shouldDispatchToProvider,
+} from './providerRouting.js'
+import { resolveModelRef } from '../providerRegistry/modelRef.js'
+import { resolveApiKey } from '../providerRegistry/types.js'
 import {
   API_ERROR_MESSAGE_PREFIX,
   CUSTOM_OFF_SWITCH_MESSAGE,
@@ -352,9 +364,16 @@ export function getPromptCachingEnabled(model: string): boolean {
 export function getCacheControl({
   scope,
   querySource,
+  anthropicClientOverride,
 }: {
   scope?: CacheScope
   querySource?: QuerySource
+  /**
+   * Registry anthropic-kind client override for the current request. When
+   * set, Bedrock-specific TTL rules are skipped (the override pins the
+   * request to the native Anthropic path).
+   */
+  anthropicClientOverride?: AnthropicClientOverride
 } = {}): {
   type: 'ephemeral'
   ttl?: '1h'
@@ -362,7 +381,9 @@ export function getCacheControl({
 } {
   return {
     type: 'ephemeral',
-    ...(should1hCacheTTL(querySource) && { ttl: '1h' }),
+    ...(should1hCacheTTL(querySource, anthropicClientOverride) && {
+      ttl: '1h',
+    }),
     ...(scope === 'global' && { scope }),
   }
 }
@@ -384,11 +405,21 @@ export function getCacheControl({
  * The allowlist is cached in STATE for session stability — prevents mixed
  * TTLs when GrowthBook's disk cache updates mid-request.
  */
-function should1hCacheTTL(querySource?: QuerySource): boolean {
+function should1hCacheTTL(
+  querySource?: QuerySource,
+  anthropicClientOverride?: AnthropicClientOverride,
+): boolean {
+  // Registry override pins the request to a user-managed endpoint — 1h TTL is
+  // a first-party billing feature that third-party endpoints may reject.
+  if (anthropicClientOverride) return false
+
   // 3P Bedrock users get 1h TTL when opted in via env var — they manage their own billing
-  // No GrowthBook gating needed since 3P users don't have GrowthBook configured
+  // No GrowthBook gating needed since 3P users don't have GrowthBook configured.
+  // resolveEnvProviderRouting semantics: a registry anthropic-kind client
+  // override pins the request to the native path, so Bedrock is never
+  // considered active while it is set.
   if (
-    getAPIProvider() === 'bedrock' &&
+    resolveEnvProviderRouting(anthropicClientOverride).isBedrock &&
     isEnvTruthy(process.env.ENABLE_PROMPT_CACHING_1H_BEDROCK)
   ) {
     return true
@@ -532,7 +563,13 @@ export async function verifyApiKey(
 
   try {
     // WARNING: if you change this to use a non-Haiku model, this request will fail in 1P unless it uses getCLISyspromptPrefix.
-    const model = getSmallFastModel()
+    const requestedModel = getSmallFastModel()
+    // This probe verifies a first-party Anthropic key. A registry provider
+    // ref (e.g. modelSlots.haiku = 'prov:model') would 404 there — probe with
+    // the built-in haiku instead.
+    const model = resolveModelRef(requestedModel)
+      ? getModelStrings().haiku45
+      : requestedModel
     const betas = getModelBetas(model)
     return await returnValue(
       withRetry(
@@ -583,6 +620,7 @@ export function userMessageToMessageParam(
   addCache = false,
   enablePromptCaching: boolean,
   querySource?: QuerySource,
+  anthropicClientOverride?: AnthropicClientOverride,
 ): MessageParam {
   if (addCache) {
     if (typeof message.message!.content === 'string') {
@@ -593,7 +631,10 @@ export function userMessageToMessageParam(
             type: 'text',
             text: message.message!.content,
             ...(enablePromptCaching && {
-              cache_control: getCacheControl({ querySource }),
+              cache_control: getCacheControl({
+                querySource,
+                anthropicClientOverride,
+              }),
             }),
           },
         ],
@@ -605,7 +646,12 @@ export function userMessageToMessageParam(
           ..._,
           ...(i === message.message!.content!.length - 1
             ? enablePromptCaching
-              ? { cache_control: getCacheControl({ querySource }) }
+              ? {
+                  cache_control: getCacheControl({
+                    querySource,
+                    anthropicClientOverride,
+                  }),
+                }
               : {}
             : {}),
         })),
@@ -629,6 +675,7 @@ export function assistantMessageToMessageParam(
   addCache = false,
   enablePromptCaching: boolean,
   querySource?: QuerySource,
+  anthropicClientOverride?: AnthropicClientOverride,
 ): MessageParam {
   if (addCache) {
     if (typeof message.message!.content === 'string') {
@@ -639,7 +686,10 @@ export function assistantMessageToMessageParam(
             type: 'text',
             text: message.message!.content,
             ...(enablePromptCaching && {
-              cache_control: getCacheControl({ querySource }),
+              cache_control: getCacheControl({
+                querySource,
+                anthropicClientOverride,
+              }),
             }),
           },
         ],
@@ -658,7 +708,12 @@ export function assistantMessageToMessageParam(
               ? !isConnectorTextBlock(contentBlock)
               : true)
               ? enablePromptCaching
-                ? { cache_control: getCacheControl({ querySource }) }
+                ? {
+                    cache_control: getCacheControl({
+                      querySource,
+                      anthropicClientOverride,
+                    }),
+                  }
                 : {}
               : {}),
           }
@@ -842,6 +897,8 @@ export async function* executeNonStreamingRequest(
     model: string
     fetchOverride?: Options['fetchOverride']
     source: string
+    /** Registry provider override (kind: 'anthropic') — bypasses env config. */
+    override?: AnthropicClientOverride
   },
   retryOptions: {
     model: string
@@ -869,6 +926,7 @@ export async function* executeNonStreamingRequest(
         model: clientOptions.model,
         fetchOverride: clientOptions.fetchOverride,
         source: clientOptions.source,
+        ...(clientOptions.override && { override: clientOptions.override }),
       }),
     async (anthropic, attempt, context) => {
       const start = Date.now()
@@ -1079,6 +1137,29 @@ async function* queryModel(
     return
   }
 
+  // Cross-provider routing: a 'providerId:modelId' model string (providers.json)
+  // resolves to a concrete provider instance. For 'anthropic'-kind instances we
+  // stay on the native path below but swap in the instance's client and use the
+  // modelId verbatim; other kinds are dispatched to their adapter after the
+  // shared preprocessing (see the dispatch point further down).
+  const requestModelRef = resolveModelRef(options.model)
+  let anthropicClientOverride: AnthropicClientOverride | undefined
+  if (requestModelRef?.provider.kind === 'anthropic') {
+    anthropicClientOverride = {
+      baseUrl: requestModelRef.provider.baseUrl,
+      apiKey: resolveApiKey(requestModelRef.provider),
+      providerId: requestModelRef.provider.id,
+    }
+    options = { ...options, model: requestModelRef.modelId }
+  }
+
+  // Env-driven provider routing (CLAUDE_CODE_USE_* and friends), resolved
+  // once here. A registry anthropic-kind client override pins this request
+  // to the native Anthropic path: the override wins over environment
+  // variables, so the env-driven openai/gemini/grok dispatch branches and
+  // all Bedrock-specific request shaping are disabled while it is active.
+  const envRouting = resolveEnvProviderRouting(anthropicClientOverride)
+
   // Derive previous request ID from the last assistant message in this query chain.
   // This is scoped per message array (main thread, subagent, teammate each have their own),
   // so concurrent agents don't clobber each other's request chain tracking.
@@ -1086,7 +1167,7 @@ async function* queryModel(
   const previousRequestId = getPreviousRequestIdFromMessages(messages)
 
   const resolvedModel =
-    getAPIProvider() === 'bedrock' &&
+    envRouting.isBedrock &&
     options.model.includes('application-inference-profile')
       ? ((await getInferenceProfileBackingModel(options.model)) ??
         options.model)
@@ -1337,10 +1418,29 @@ async function* queryModel(
     API_MAX_MEDIA_PER_REQUEST,
   )
 
+  // Cross-provider dispatch: a resolved 'providerId:modelId' ref routes this
+  // request to the matching provider instance. 'anthropic'-kind refs continue
+  // on the native path below with a client override; all other kinds delegate
+  // to their adapter with the modelId used verbatim (no env-based mapping).
+  if (shouldDispatchToProvider(requestModelRef)) {
+    yield* dispatchToProviderInstance(requestModelRef, {
+      messagesForAPI,
+      systemPrompt,
+      tools,
+      filteredTools,
+      signal,
+      options,
+      thinkingConfig,
+    })
+    return
+  }
+
   // OpenAI-compatible provider: delegate to the OpenAI adapter layer
   // after shared preprocessing (message normalization, tool filtering,
   // media stripping) but before Anthropic-specific logic (betas, thinking, caching).
-  if (getAPIProvider() === 'openai') {
+  // envProvider is null when an anthropic-kind client override is active —
+  // the override wins over CLAUDE_CODE_USE_OPENAI.
+  if (envRouting.envProvider === 'openai') {
     const { queryModelOpenAI } = await import('./openai/index.js')
     // OpenAI emulates Anthropic's dynamic tool loading client-side. It needs
     // the full tool pool so SearchExtraToolsTool can search deferred MCP tools that
@@ -1355,7 +1455,7 @@ async function* queryModel(
     return
   }
 
-  if (getAPIProvider() === 'gemini') {
+  if (envRouting.envProvider === 'gemini') {
     const { queryModelGemini } = await import('./gemini/index.js')
     yield* queryModelGemini(
       messagesForAPI,
@@ -1368,7 +1468,7 @@ async function* queryModel(
     return
   }
 
-  if (getAPIProvider() === 'grok') {
+  if (envRouting.envProvider === 'grok') {
     const { queryModelGrok } = await import('./grok/index.js')
     yield* queryModelGrok(
       messagesForAPI,
@@ -1476,6 +1576,7 @@ async function* queryModel(
   const system = buildSystemPromptBlocks(systemPrompt, enablePromptCaching, {
     skipGlobalCacheForSystemPrompt: needsToolBasedCacheMarker,
     querySource: options.querySource,
+    anthropicClientOverride,
   })
   const useBetas = betas.length > 0
 
@@ -1632,11 +1733,13 @@ async function* queryModel(
       betasParams.push(CONTEXT_1M_BETA_HEADER)
     }
 
-    // For Bedrock, include model-based betas (no tool search header — self-built search)
-    const bedrockBetas =
-      getAPIProvider() === 'bedrock'
-        ? [...getBedrockExtraBodyParamsBetas(retryContext.model)]
-        : []
+    // For Bedrock, include model-based betas (no tool search header — self-built search).
+    // envRouting.isBedrock is false when a registry anthropic-kind client
+    // override is active, so custom Anthropic-compatible endpoints are treated
+    // as firstParty and never receive Bedrock-specific extra body fields.
+    const bedrockBetas = envRouting.isBedrock
+      ? [...getBedrockExtraBodyParamsBetas(retryContext.model)]
+      : []
     const extraBodyParams = getExtraBodyParams(bedrockBetas)
 
     const outputConfig: BetaOutputConfig = {
@@ -1795,6 +1898,7 @@ async function* queryModel(
         consumedCacheEdits as any,
         consumedPinnedEdits as any,
         options.skipCacheWrite,
+        anthropicClientOverride,
       ),
       system,
       tools: allTools,
@@ -1878,6 +1982,7 @@ async function* queryModel(
           model: options.model,
           fetchOverride: options.fetchOverride,
           source: options.querySource,
+          ...(anthropicClientOverride && { override: anthropicClientOverride }),
         }),
       async (anthropic, attempt, context) => {
         attemptNumber = attempt
@@ -1907,7 +2012,9 @@ async function* queryModel(
         // server request ID) can still be correlated with server logs.
         // First-party only — 3P providers don't log it (inc-4029 class).
         clientRequestId =
-          getAPIProvider() === 'firstParty' && isFirstPartyAnthropicBaseUrl()
+          !anthropicClientOverride &&
+          getAPIProvider() === 'firstParty' &&
+          isFirstPartyAnthropicBaseUrl()
             ? randomUUID()
             : undefined
 
@@ -2510,8 +2617,10 @@ async function* queryModel(
         // Non-Anthropic providers that flow through this same client path
         // (Bedrock) expose their own throttle headers — let their adapter
         // overwrite the store with its bucket(s). Anthropic's adapter runs
-        // inside extractQuotaStatusFromHeaders.
-        if (getAPIProvider() === 'bedrock') {
+        // inside extractQuotaStatusFromHeaders. envRouting.isBedrock is false
+        // when a registry anthropic-kind client override is active, so a
+        // custom endpoint's headers are never fed to the bedrock bucket.
+        if (envRouting.isBedrock) {
           updateProviderBuckets(
             'bedrock',
             bedrockAdapter.parseHeaders(resp.headers),
@@ -2674,7 +2783,11 @@ async function* queryModel(
           : 'other') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
       const result = yield* executeNonStreamingRequest(
-        { model: options.model, source: options.querySource },
+        {
+          model: options.model,
+          source: options.querySource,
+          ...(anthropicClientOverride && { override: anthropicClientOverride }),
+        },
         {
           model: options.model,
           fallbackModel: options.fallbackModel,
@@ -2776,7 +2889,13 @@ async function* queryModel(
       try {
         // Fall back to non-streaming mode
         const result = yield* executeNonStreamingRequest(
-          { model: options.model, source: options.querySource },
+          {
+            model: options.model,
+            source: options.querySource,
+            ...(anthropicClientOverride && {
+              override: anthropicClientOverride,
+            }),
+          },
           {
             model: options.model,
             fallbackModel: options.fallbackModel,
@@ -3222,6 +3341,7 @@ export function addCacheBreakpoints(
   newCacheEdits?: CachedMCEditsBlock | null,
   pinnedEdits?: CachedMCPinnedEdits[],
   skipCacheWrite = false,
+  anthropicClientOverride?: AnthropicClientOverride,
 ): MessageParam[] {
   logEvent('tengu_api_cache_breakpoints', {
     totalMessageCount: messages.length,
@@ -3249,6 +3369,7 @@ export function addCacheBreakpoints(
         addCache,
         enablePromptCaching,
         querySource,
+        anthropicClientOverride,
       )
     }
     return assistantMessageToMessageParam(
@@ -3256,6 +3377,7 @@ export function addCacheBreakpoints(
       addCache,
       enablePromptCaching,
       querySource,
+      anthropicClientOverride,
     )
   })
 
@@ -3371,6 +3493,7 @@ export function buildSystemPromptBlocks(
   options?: {
     skipGlobalCacheForSystemPrompt?: boolean
     querySource?: QuerySource
+    anthropicClientOverride?: AnthropicClientOverride
   },
 ): TextBlockParam[] {
   // IMPORTANT: Do not add any more blocks for caching or you will get a 400
@@ -3385,6 +3508,7 @@ export function buildSystemPromptBlocks(
           cache_control: getCacheControl({
             scope: block.cacheScope,
             querySource: options?.querySource,
+            anthropicClientOverride: options?.anthropicClientOverride,
           }),
         }),
     }

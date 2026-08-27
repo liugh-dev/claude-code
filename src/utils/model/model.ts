@@ -159,8 +159,22 @@ function getProviderPrimaryModel(): ModelName | undefined {
   return undefined
 }
 
+/**
+ * Model slot overrides from settings.json (modelSlots.{opus,sonnet,haiku}).
+ * Values may be plain model IDs or cross-provider refs ('providerId:modelId')
+ * resolved by the request router. Checked before the env-var chain.
+ */
+function getModelSlot(
+  tier: 'opus' | 'sonnet' | 'haiku',
+): ModelName | undefined {
+  const slot = getSettings_DEPRECATED()?.modelSlots?.[tier]
+  return slot && slot.trim() !== '' ? slot : undefined
+}
+
 // @[MODEL LAUNCH]: Update the default Opus model (3P providers may lag so keep defaults unchanged).
 export function getDefaultOpusModel(): ModelName {
+  const slotModel = getModelSlot('opus')
+  if (slotModel) return slotModel
   const provider = getAPIProvider()
   const openAIModel = getOpenAIModelForTier(provider, 'opus')
   if (openAIModel) return openAIModel
@@ -186,6 +200,8 @@ export function getDefaultOpusModel(): ModelName {
 
 // @[MODEL LAUNCH]: Update the default Sonnet model (3P providers may lag so keep defaults unchanged).
 export function getDefaultSonnetModel(): ModelName {
+  const slotModel = getModelSlot('sonnet')
+  if (slotModel) return slotModel
   const provider = getAPIProvider()
   const openAIModel = getOpenAIModelForTier(provider, 'sonnet')
   if (openAIModel) return openAIModel
@@ -210,6 +226,8 @@ export function getDefaultSonnetModel(): ModelName {
 
 // @[MODEL LAUNCH]: Update the default Haiku model (3P providers may lag so keep defaults unchanged).
 export function getDefaultHaikuModel(): ModelName {
+  const slotModel = getModelSlot('haiku')
+  if (slotModel) return slotModel
   const provider = getAPIProvider()
   const openAIModel = getOpenAIModelForTier(provider, 'haiku')
   if (openAIModel) return openAIModel

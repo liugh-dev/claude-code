@@ -81,28 +81,63 @@ function createStderrLogger(): ClientOptions['logger'] {
   }
 }
 
-export async function getAnthropicClient({
-  apiKey,
-  maxRetries,
-  model,
-  fetchOverride,
-  source,
-}: {
+/**
+ * Per-request provider override for registry-based Anthropic-compatible
+ * endpoints (providers.json entries with kind: 'anthropic').
+ *
+ * When present, getAnthropicClient bypasses all environment-driven
+ * configuration (OAuth, ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL, and the
+ * Bedrock/Vertex/Foundry branches) and constructs a plain Anthropic SDK
+ * client from the given baseUrl/apiKey. Proxy configuration is preserved.
+ */
+export interface AnthropicClientOverride {
+  baseUrl?: string
   apiKey?: string
-  maxRetries: number
-  model?: string
-  fetchOverride?: ClientOptions['fetch']
-  source?: string
-}): Promise<Anthropic> {
+  /** Registry provider id — used as the cache key for the client pool. */
+  providerId?: string
+}
+
+/**
+ * Instance pool for override clients: providerId → Anthropic client.
+ * Separate from the env-driven default path (which constructs a fresh client
+ * per call) so existing behavior is unaffected.
+ */
+const anthropicOverrideClients = new Map<string, Anthropic>()
+
+/** Clear the override client pool (used by tests and on provider config change). */
+export function clearAnthropicOverrideClientCache(): void {
+  anthropicOverrideClients.clear()
+}
+
+// When providers.json changes (add/update/remove), the cached clients keyed
+// by providerId are stale — they still hold the old apiKey/baseUrl.
+// Subscribe once at module load so saveProviders() invalidates the pool.
+import { onProvidersChanged } from '../providerRegistry/loader.js'
+onProvidersChanged(() => {
+  anthropicOverrideClients.clear()
+})
+
+/**
+ * Standard custom request headers shared by every Anthropic client this
+ * process creates — env-driven (firstParty/Bedrock/Vertex/Foundry) and
+ * registry-override clients alike: CLI identity, session id, user-supplied
+ * ANTHROPIC_CUSTOM_HEADERS, remote container/session ids, SDK client-app
+ * attribution, SSH auth-proxy nonce, and the additional-protection opt-in.
+ *
+ * Auth material (OAuth token refresh, ANTHROPIC_AUTH_TOKEN /
+ * apiKeyHelper Authorization header) is NOT included here — it belongs to
+ * the env-driven path only; override clients authenticate via
+ * override.apiKey.
+ */
+function buildBaseDefaultHeaders(): Record<string, string> {
   const containerId = process.env.CLAUDE_CODE_CONTAINER_ID
   const remoteSessionId = process.env.CLAUDE_CODE_REMOTE_SESSION_ID
   const clientApp = process.env.CLAUDE_AGENT_SDK_CLIENT_APP
-  const customHeaders = getCustomHeaders()
-  const defaultHeaders: { [key: string]: string } = {
+  const headers: Record<string, string> = {
     'x-app': 'cli',
     'User-Agent': getUserAgent(),
     'X-Claude-Code-Session-Id': getSessionId(),
-    ...customHeaders,
+    ...getCustomHeaders(),
     ...(containerId ? { 'x-claude-remote-container-id': containerId } : {}),
     ...(remoteSessionId
       ? { 'x-claude-remote-session-id': remoteSessionId }
@@ -114,19 +149,71 @@ export async function getAnthropicClient({
       ? { 'x-auth-nonce': process.env.ANTHROPIC_AUTH_NONCE }
       : {}),
   }
+  // Add additional protection header if enabled via env var
+  if (isEnvTruthy(process.env.CLAUDE_CODE_ADDITIONAL_PROTECTION)) {
+    headers['x-anthropic-additional-protection'] = 'true'
+  }
+  return headers
+}
+
+export async function getAnthropicClient({
+  apiKey,
+  maxRetries,
+  model,
+  fetchOverride,
+  source,
+  override,
+}: {
+  apiKey?: string
+  maxRetries: number
+  model?: string
+  fetchOverride?: ClientOptions['fetch']
+  source?: string
+  override?: AnthropicClientOverride
+}): Promise<Anthropic> {
+  // Registry override path: bypass env-driven config entirely. A
+  // caller-scoped fetchOverride is never pooled (it belongs to the caller).
+  if (override) {
+    const cacheKey = override.providerId
+    if (cacheKey && !fetchOverride) {
+      const cached = anthropicOverrideClients.get(cacheKey)
+      if (cached) return cached
+    }
+    const resolvedFetch = buildFetch(fetchOverride, source, {
+      // Registry anthropic-kind override: the endpoint is a custom
+      // Anthropic-compatible server, not the first-party API — never inject
+      // x-client-request-id (mirrors the clientRequestId gating in claude.ts).
+      injectClientRequestId: false,
+    })
+    const client = new Anthropic({
+      // Explicit null when unset so the SDK never falls back to
+      // process.env.ANTHROPIC_API_KEY.
+      apiKey: override.apiKey ?? null,
+      ...(override.baseUrl ? { baseURL: override.baseUrl } : {}),
+      // Same standard custom headers as the env-driven path
+      // (ANTHROPIC_CUSTOM_HEADERS, container/session ids, x-client-app, ...).
+      defaultHeaders: buildBaseDefaultHeaders(),
+      maxRetries,
+      timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
+      dangerouslyAllowBrowser: true,
+      fetchOptions: getProxyFetchOptions({
+        forAnthropicAPI: true,
+      }) as ClientOptions['fetchOptions'],
+      ...(resolvedFetch && { fetch: resolvedFetch }),
+      ...(isDebugToStdErr() && { logger: createStderrLogger() }),
+    })
+    if (cacheKey && !fetchOverride) {
+      anthropicOverrideClients.set(cacheKey, client)
+    }
+    return client
+  }
+
+  const defaultHeaders = buildBaseDefaultHeaders()
 
   // Log API client configuration for HFI debugging
   logForDebugging(
-    `[API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: ${!!process.env.ANTHROPIC_CUSTOM_HEADERS}, has Authorization header: ${!!customHeaders['Authorization']}`,
+    `[API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: ${!!process.env.ANTHROPIC_CUSTOM_HEADERS}, has Authorization header: ${!!defaultHeaders['Authorization']}`,
   )
-
-  // Add additional protection header if enabled via env var
-  const additionalProtectionEnabled = isEnvTruthy(
-    process.env.CLAUDE_CODE_ADDITIONAL_PROTECTION,
-  )
-  if (additionalProtectionEnabled) {
-    defaultHeaders['x-anthropic-additional-protection'] = 'true'
-  }
 
   logForDebugging('[API:auth] OAuth token check starting')
   await checkAndRefreshOAuthTokenIfNeeded()
@@ -355,16 +442,27 @@ function getCustomHeaders(): Record<string, string> {
 
 export const CLIENT_REQUEST_ID_HEADER = 'x-client-request-id'
 
-function buildFetch(
+/**
+ * Wrap a fetch with request logging and optional x-client-request-id
+ * injection. Exported for tests.
+ *
+ * `options.injectClientRequestId` defaults to env-based first-party
+ * detection. Callers on the registry anthropic-kind override path pass
+ * `false` explicitly — the request targets a custom Anthropic-compatible
+ * endpoint, not the first-party API.
+ */
+export function buildFetch(
   fetchOverride: ClientOptions['fetch'],
   source: string | undefined,
+  options?: { injectClientRequestId?: boolean },
 ): ClientOptions['fetch'] {
   // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
   const inner = fetchOverride ?? globalThis.fetch
   // Only send to the first-party API — Bedrock/Vertex/Foundry don't log it
   // and unknown headers risk rejection by strict proxies (inc-4029 class).
   const injectClientRequestId =
-    getAPIProvider() === 'firstParty' && isFirstPartyAnthropicBaseUrl()
+    options?.injectClientRequestId ??
+    (getAPIProvider() === 'firstParty' && isFirstPartyAnthropicBaseUrl())
   return (input, init) => {
     // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
     const headers = new Headers(init?.headers)

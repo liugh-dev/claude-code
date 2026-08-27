@@ -14,7 +14,9 @@ import type {
 import type { AgentId } from '../../../types/ids.js'
 import type { Tools } from '../../../Tool.js'
 import { getSessionId } from '../../../bootstrap/state.js'
-import { getOpenAIClient } from './client.js'
+import { getOpenAIClient, getOpenAIClientForProvider } from './client.js'
+import type { ProviderConfig } from '../../providerRegistry/types.js'
+import { applyCompatRule } from '../../providerRegistry/providerCompatMatrix.js'
 import {
   formatOpenAIPromptCacheKey,
   getOfficialOpenAIPromptCacheKey,
@@ -223,13 +225,18 @@ export async function* queryModelOpenAI(
   tools: Tools,
   signal: AbortSignal,
   options: Options,
+  providerOverride?: ProviderConfig,
 ): AsyncGenerator<
   StreamEvent | AssistantMessage | SystemAPIErrorMessage,
   void
 > {
   try {
-    // 1. Resolve model name
-    const openaiModel = resolveOpenAIModel(options.model)
+    // 1. Resolve model name. With a provider override the model string is
+    //    already a concrete model id for that instance — skip the OPENAI_*
+    //    env-based model mapping.
+    const openaiModel = providerOverride
+      ? options.model
+      : resolveOpenAIModel(options.model)
 
     // 2. Normalize messages using shared preprocessing
     const messagesForAPI = normalizeMessagesForAPI(messages, tools)
@@ -351,16 +358,24 @@ export async function* queryModelOpenAI(
       options.maxOutputTokensOverride,
     )
 
-    const useChatGPTResponses = isChatGPTAuthEnabled()
+    // Registry provider instances never use the ChatGPT OAuth/Responses path
+    // or the official-OpenAI prompt cache key — those are env-driven and
+    // belong to the legacy single-provider configuration.
+    const useChatGPTResponses = !providerOverride && isChatGPTAuthEnabled()
     // OpenAI's official OAuth and API-key routes share the same prompt-cache
     // contract. Scope the key to the real conversation so resumed turns stay
     // sticky while unrelated sessions do not share a routing bucket. Generic
     // compatible endpoints intentionally receive no OpenAI-specific fields.
     const sessionId = getSessionId()
     const sessionPromptCacheKey = formatOpenAIPromptCacheKey(sessionId)
-    const promptCacheKey = useChatGPTResponses
-      ? sessionPromptCacheKey
-      : getOfficialOpenAIPromptCacheKey(process.env.OPENAI_BASE_URL, sessionId)
+    const promptCacheKey = providerOverride
+      ? undefined
+      : useChatGPTResponses
+        ? sessionPromptCacheKey
+        : getOfficialOpenAIPromptCacheKey(
+            process.env.OPENAI_BASE_URL,
+            sessionId,
+          )
     const useOfficialOpenAICache = promptCacheKey !== undefined
 
     logForDebugging(
@@ -387,12 +402,8 @@ export async function* queryModelOpenAI(
           openaiModel,
         )
       : adaptOpenAIStreamToAnthropic(
-          await getOpenAIClient({
-            maxRetries: 0,
-            fetchOverride: options.fetchOverride as unknown as typeof fetch,
-            source: options.querySource,
-          }).chat.completions.create(
-            buildOpenAIRequestBody({
+          await (() => {
+            const requestBody = buildOpenAIRequestBody({
               model: openaiModel,
               messages: openaiMessages,
               tools: openaiTools,
@@ -401,9 +412,31 @@ export async function* queryModelOpenAI(
               maxTokens,
               temperatureOverride: options.temperatureOverride,
               promptCacheKey,
-            }),
-            { signal },
-          ),
+            })
+            // Providers with a compatRule get fields stripped that their
+            // endpoint would reject (stream_options, thinking fields, ...).
+            const finalBody = providerOverride?.compatRule
+              ? (applyCompatRule(
+                  requestBody as unknown as Record<string, unknown>,
+                  providerOverride.compatRule,
+                ) as unknown as typeof requestBody)
+              : requestBody
+            const client = providerOverride
+              ? getOpenAIClientForProvider(providerOverride, {
+                  maxRetries: 0,
+                  fetchOverride: options.fetchOverride as unknown as
+                    | typeof fetch
+                    | undefined,
+                  source: options.querySource,
+                })
+              : getOpenAIClient({
+                  maxRetries: 0,
+                  fetchOverride:
+                    options.fetchOverride as unknown as typeof fetch,
+                  source: options.querySource,
+                })
+            return client.chat.completions.create(finalBody, { signal })
+          })(),
           openaiModel,
           { includeCacheWriteTokens: useOfficialOpenAICache },
         )
