@@ -368,6 +368,7 @@ function AddProvider({ onDone }: { onDone: LocalJSXCommandOnDone }): React.React
 
         {step.name === 'baseUrl' && (
           <BaseUrlStep
+            kind={draft.kind}
             value={draft.baseUrl}
             onChange={v => setDraft(d => ({ ...d, baseUrl: v }))}
             onSubmit={handleBaseUrlSubmit}
@@ -509,6 +510,7 @@ function IdStep({
 }
 
 function BaseUrlStep({
+  kind,
   value,
   onChange,
   onSubmit,
@@ -516,6 +518,7 @@ function BaseUrlStep({
   cursorOffset,
   onChangeCursorOffset,
 }: {
+  kind: ProviderKind;
   value: string;
   onChange: (v: string) => void;
   onSubmit: (v: string) => void;
@@ -524,9 +527,15 @@ function BaseUrlStep({
   onChangeCursorOffset: (n: number) => void;
 }): React.ReactNode {
   useKeybinding('confirm:no', () => onSubmit(''), { context: 'Settings' });
+  // anthropic 协议的 SDK 固定向 baseURL 追加 /v1/messages；baseUrl 若以
+  // /v1 结尾会拼出 /v1/v1/messages 导致 404。openai-compat/grok 的 SDK
+  // 只追加 /chat/completions，baseUrl 必须自带 /v1。
+  const anthropicHint = kind === 'anthropic';
   return (
     <Box flexDirection="column" gap={1}>
-      <Text>输入 baseUrl（包含 /v1 等路径前缀）：</Text>
+      <Text>
+        {anthropicHint ? '输入 baseUrl（不要以 /v1 结尾，会自动拼接）：' : '输入 baseUrl（包含 /v1 等路径前缀）：'}
+      </Text>
       <Box flexDirection="row" gap={1}>
         <Text>{figures.pointer}</Text>
         <TextInput
@@ -535,7 +544,7 @@ function BaseUrlStep({
           onSubmit={onSubmit}
           focus
           showCursor
-          placeholder="https://api.example.com/v1"
+          placeholder={anthropicHint ? 'https://api.example.com' : 'https://api.example.com/v1'}
           columns={60}
           cursorOffset={cursorOffset}
           onChangeCursorOffset={onChangeCursorOffset}
