@@ -28,7 +28,8 @@
 | **Web Search**              | 内置网页搜索工具, 支持 bing 和 brave 搜索                                                                                    | [文档](https://ccb.agent-aura.top/docs/features/web-browser-tool)                                                                         |
 | **Poor Mode**               | 穷鬼模式，关闭记忆提取和键入建议,大幅度减少并发请求                                                                          | /poor 可以开关                                                                                                                            |
 | **Channels 频道通知**       | MCP 服务器推送外部消息到会话（飞书/Slack/Discord/微信等），`--channels plugin:name@marketplace` 启用                         | [文档](https://ccb.agent-aura.top/docs/features/channels)                                                                                 |
-| **自定义模型供应商**        | OpenAI/Anthropic/Gemini/Grok 兼容  (`/login`)                                                                                          | [文档](https://ccb.agent-aura.top/docs/features/all-features-guide)                                                                        |
+| **自定义模型供应商**        | `/providers` 多实例注册表：OpenAI/Anthropic/Gemini/Grok 四种协议，同一协议可配多个实例（如智谱 + OpenRouter），添加时自动拉取模型列表，`providerId:modelId` 引用语法支持跨 provider 组合主/轻量模型槽                                                | [文档](https://ccb.agent-aura.top/docs/features/all-features-guide)                                                                        |
+| **/model 模型槽选择器**      | 主模型/轻量模型双输入框（Tab 切换），Enter 浏览"最近使用 + provider 完整列表"分区视图；主模型支持 Space 切换 1M 上下文开关（追加 `[1m]` 后缀），轻量模型承接后台任务（token 计数、记忆提取等），可与主模型来自不同 provider                    | 源码 [`components/ModelSlotPicker.tsx`](./src/components/ModelSlotPicker.tsx)                                                              |
 | Voice Mode                  | 语音输入，支持豆包语言输入（`/voice doubao`）                                                                   | [文档](https://ccb.agent-aura.top/docs/features/voice-mode)                                                                               |
 | Computer Use                | 屏幕截图、键鼠控制                                                                                                           | [文档](https://ccb.agent-aura.top/docs/features/computer-use)                                                                             |
 | Chrome Use                  | 浏览器自动化、表单填写、数据抓取                                                                                             | [自托管](https://ccb.agent-aura.top/docs/features/chrome-use-mcp) [原生版](https://ccb.agent-aura.top/docs/features/claude-in-chrome-mcp) |
@@ -163,6 +164,28 @@ bun run build
 - ⌨️ **Tab / Shift+Tab** 切换字段，**Enter** 确认并跳到下一个，最后一个字段按 Enter 保存
 
 > ℹ️ 支持所有 Anthropic API 兼容服务（如 OpenRouter、AWS Bedrock 代理等），只要接口兼容 Messages API 即可。
+
+### 🧩 多 Provider 配置 /providers
+
+`/login` 是单 provider 的快速通道；需要同时使用多个供应商（或同一协议配多个实例，如智谱 coding plan + OpenRouter）时，用 `/providers` 命令管理多实例注册表：
+
+```text
+/providers              # 列出所有 provider
+/providers add          # 交互式添加：id → 协议类型 → baseUrl → apiKey → 自动拉取模型列表
+/providers remove [id]  # 删除 provider（无 id 时交互选择）
+/providers use <id> [model]  # 切换模型到 provider:model
+```
+
+配置存储在 `~/.claude/providers.json`（权限自动收紧为 0600）。添加完成后，用 `providerId:modelId` 引用语法在 `/model` 里跨 provider 组合模型，例如主模型用 `zhipu:glm-5.3-flash[1m]`、轻量模型用 `opencode-go:glm-5.2`。
+
+各协议的 baseUrl 约定不同，添加时按界面提示填写：
+
+| 协议类型      | baseUrl 约定                          | 💡 示例                                   |
+| ------------- | ------------------------------------- | ----------------------------------------- |
+| openai-compat | 需包含 `/v1` 路径前缀                 | `https://open.bigmodel.cn/api/coding/paas/v4` |
+| anthropic     | 不要以 `/v1` 结尾（SDK 会自动拼接）   | `https://open.bigmodel.cn/api/anthropic`  |
+| gemini        | 可带可不带 `/v1beta`（自动补全）      | `https://generativelanguage.googleapis.com` |
+| grok          | 需包含 `/v1` 路径前缀                 | `https://api.x.ai/v1`                     |
 
 ## Feature Flags
 
