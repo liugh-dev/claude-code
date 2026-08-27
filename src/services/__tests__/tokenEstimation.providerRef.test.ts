@@ -268,7 +268,8 @@ describe('countMessagesTokensWithAPI provider-ref routing', () => {
     expect(captured!.url).toContain('anthropic-override.example.com')
     expect(captured!.url).toContain('/v1/messages/count_tokens')
     expect(captured!.body.model).toBe('claude-sonnet-4-5')
-    expect(captured!.headers['x-api-key']).toBe('sk-override-key')
+    expect(captured!.headers['authorization']).toBe('Bearer sk-override-key')
+    expect(captured!.headers['x-api-key']).toBeUndefined()
   })
 
   test('non-anthropic ref falls back to local estimation without API call', async () => {

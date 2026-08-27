@@ -500,7 +500,8 @@ describe('sideQuery provider-ref routing', () => {
     expect(captured).not.toBeNull()
     expect(captured!.url).toContain('anthropic-override.example.com')
     expect(captured!.body.model).toBe('claude-haiku-4-5')
-    expect(captured!.headers['x-api-key']).toBe('sk-override-key')
+    expect(captured!.headers['authorization']).toBe('Bearer sk-override-key')
+    expect(captured!.headers['x-api-key']).toBeUndefined()
     // Registry override clients never inject the first-party request id header
     expect(captured!.headers['x-client-request-id']).toBeUndefined()
     expect(result.content[0]).toMatchObject({ type: 'text', text: 'ok' })

@@ -126,8 +126,10 @@ onProvidersChanged(() => {
  *
  * Auth material (OAuth token refresh, ANTHROPIC_AUTH_TOKEN /
  * apiKeyHelper Authorization header) is NOT included here — it belongs to
- * the env-driven path only; override clients authenticate via
- * override.apiKey.
+ * the env-driven path. Registry anthropic-kind override clients
+ * authenticate with Authorization: Bearer <override.apiKey>, which is
+ * injected into defaultHeaders at the override construction site
+ * (getAnthropicClient), not here.
  */
 function buildBaseDefaultHeaders(): Record<string, string> {
   const containerId = process.env.CLAUDE_CODE_CONTAINER_ID
@@ -186,13 +188,23 @@ export async function getAnthropicClient({
       injectClientRequestId: false,
     })
     const client = new Anthropic({
-      // Explicit null when unset so the SDK never falls back to
+      // Bearer auth: anthropic-kind registry providers always authenticate with
+      // Authorization: Bearer <apiKey> (never the SDK's x-api-key). Setting
+      // apiKey to null prevents the SDK from injecting x-api-key at all; the
+      // Bearer header is added to defaultHeaders below when override.apiKey is
+      // present. Explicit null (not undefined) so the SDK never falls back to
       // process.env.ANTHROPIC_API_KEY.
-      apiKey: override.apiKey ?? null,
+      apiKey: null,
       ...(override.baseUrl ? { baseURL: override.baseUrl } : {}),
       // Same standard custom headers as the env-driven path
-      // (ANTHROPIC_CUSTOM_HEADERS, container/session ids, x-client-app, ...).
-      defaultHeaders: buildBaseDefaultHeaders(),
+      // (ANTHROPIC_CUSTOM_HEADERS, container/session ids, x-client-app, ...),
+      // plus Bearer auth for this override client.
+      defaultHeaders: {
+        ...buildBaseDefaultHeaders(),
+        ...(override.apiKey
+          ? { Authorization: `Bearer ${override.apiKey}` }
+          : {}),
+      },
       maxRetries,
       timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
       dangerouslyAllowBrowser: true,

@@ -164,7 +164,12 @@ describe('getAnthropicClient override path default headers', () => {
       maxRetries: 0,
       override: OVERRIDE,
     })
-    expect(client.apiKey).toBe('sk-corp-key')
+    // apiKey is null so the SDK injects no x-api-key; auth is via Bearer in
+    // defaultHeaders.
+    expect(client.apiKey).toBeNull()
+    expect(getDefaultHeaders(client)['Authorization']).toBe(
+      'Bearer sk-corp-key',
+    )
     expect(client.baseURL).toBe('https://corp-anthropic.example.com')
 
     clearAnthropicOverrideClientCache()
@@ -174,6 +179,7 @@ describe('getAnthropicClient override path default headers', () => {
     })
     // Explicit null — the SDK must not pick up process.env.ANTHROPIC_API_KEY.
     expect(noKeyClient.apiKey).toBeNull()
+    expect(getDefaultHeaders(noKeyClient)['Authorization']).toBeUndefined()
   })
 })
 
