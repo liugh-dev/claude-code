@@ -7,6 +7,8 @@ const TARGETS = {
   'linux-x64': { ext: '', bunTarget: 'bun-linux-x64' },
   'linux-arm64': { ext: '', bunTarget: 'bun-linux-arm64' },
   'windows-x64': { ext: '.exe', bunTarget: 'bun-windows-x64' },
+  'darwin-x64': { ext: '', bunTarget: 'bun-darwin-x64' },
+  'darwin-arm64': { ext: '', bunTarget: 'bun-darwin-arm64' },
 } as const
 
 type TargetKey = keyof typeof TARGETS
@@ -23,7 +25,7 @@ if (helpFlag) {
 Usage: bun run compile.ts [options]
 
 Options:
-  --target=<name>   Build for specific target (linux-x64, linux-arm64, windows-x64)
+  --target=<name>   Build for specific target (linux-x64, linux-arm64, windows-x64, darwin-x64, darwin-arm64)
   --all             Build for all supported targets
   --outdir=<dir>    Output directory (default: dist/compiled)
   --help, -h        Show this help
