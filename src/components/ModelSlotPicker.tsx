@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Box, Text, useInput } from '@anthropic/ink';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
+import { useRegisterOverlay } from '../context/overlayContext.js';
 import TextInput from './TextInput.js';
 import { Select } from './CustomSelect/index.js';
 import { Byline, KeyboardShortcutHint, Pane } from '@anthropic/ink';
@@ -193,6 +194,10 @@ export function ModelSlotPicker({ onDone, onCancel, isStandaloneCommand }: Model
     onCancel?.() ?? onDone('Model unchanged', { display: 'system' });
   }, [onCancel, onDone]);
 
+  // Register as an active overlay so CancelRequestHandler (which listens for
+  // Escape) doesn't intercept it before our picker gets a chance to handle it.
+  useRegisterOverlay('model-slot-picker');
+
   // Open the model list for a slot, resetting the 1M flag and pointing focus
   // at the first section that has items (recent takes priority, then provider).
   const openList = useCallback(
@@ -245,6 +250,20 @@ export function ModelSlotPicker({ onDone, onCancel, isStandaloneCommand }: Model
       if (key.upArrow || key.downArrow) {
         setFocusedSlot(prev => (prev === 'main' ? 'haiku' : 'main'));
         event.stopImmediatePropagation();
+      }
+    },
+    { isActive: mode.type === 'input' },
+  );
+
+  // In input mode, Escape closes the picker. List mode handles its own Escape
+  // via the Select component's onCancel (which returns to input mode), so we
+  // only need to listen here. BaseTextInput's useInput registers first and
+  // would otherwise consume Escape into its double-press clear logic.
+  useInput(
+    (_input, key) => {
+      if (mode.type !== 'input') return;
+      if (key.escape) {
+        handleCancel();
       }
     },
     { isActive: mode.type === 'input' },
