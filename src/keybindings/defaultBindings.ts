@@ -324,6 +324,8 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       left: 'modelPicker:decreaseEffort',
       right: 'modelPicker:increaseEffort',
       space: 'modelPicker:toggle1M',
+      tab: 'modelPicker:toggleSlot',
+      'ctrl+l': 'modelPicker:openList',
     },
   },
   // Effort panel (slash /effort without args)

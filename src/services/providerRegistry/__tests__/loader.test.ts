@@ -32,56 +32,49 @@ afterEach(async () => {
 })
 
 describe('loadProviders', () => {
-  test('returns 4 default providers when providers.json does not exist', async () => {
+  test('returns empty list when providers.json does not exist', async () => {
     const { loadProviders } = await import('../loader.js')
     const providers = loadProviders()
-    expect(providers).toHaveLength(4)
-    expect(providers.map(p => p.id)).toEqual([
-      'cerebras',
-      'groq',
-      'qwen',
-      'deepseek',
-    ])
+    expect(providers).toHaveLength(0)
   })
 
-  test('returns defaults when providers.json is empty', async () => {
+  test('returns empty list when providers.json is empty', async () => {
     writeFileSync(join(tmpDir, 'providers.json'), '')
     const { loadProviders } = await import('../loader.js')
     const providers = loadProviders()
-    expect(providers).toHaveLength(4)
+    expect(providers).toHaveLength(0)
   })
 
-  test('returns defaults when providers.json is empty array', async () => {
+  test('returns empty list when providers.json is empty array', async () => {
     writeFileSync(join(tmpDir, 'providers.json'), '[]')
     const { loadProviders } = await import('../loader.js')
     const providers = loadProviders()
-    expect(providers).toHaveLength(4)
+    expect(providers).toHaveLength(0)
   })
 
-  test('returns defaults when providers.json is corrupt JSON', async () => {
+  test('returns empty list when providers.json is corrupt JSON', async () => {
     writeFileSync(join(tmpDir, 'providers.json'), '{not valid json')
     const { loadProviders } = await import('../loader.js')
     const providers = loadProviders()
-    expect(providers).toHaveLength(4)
+    expect(providers).toHaveLength(0)
   })
 
-  test('returns defaults when providers.json fails schema validation', async () => {
+  test('returns empty list when providers.json fails schema validation', async () => {
     writeFileSync(
       join(tmpDir, 'providers.json'),
       JSON.stringify([{ id: 123, kind: 'bad-kind', baseUrl: 'not-a-url' }]),
     )
     const { loadProviders } = await import('../loader.js')
     const providers = loadProviders()
-    expect(providers).toHaveLength(4)
+    expect(providers).toHaveLength(0)
   })
 
-  test('merges valid user providers on top of defaults', async () => {
+  test('loads valid user providers', async () => {
     const customProvider = {
       id: 'myendpoint',
       kind: 'openai-compat',
       baseUrl: 'https://my.api.com/v1',
       apiKeyEnv: 'MY_API_KEY',
-      defaultModel: 'my-model',
       compatRule: 'permissive',
     }
     writeFileSync(
@@ -90,45 +83,22 @@ describe('loadProviders', () => {
     )
     const { loadProviders } = await import('../loader.js')
     const providers = loadProviders()
-    // 4 defaults + 1 custom = 5
-    expect(providers).toHaveLength(5)
+    expect(providers).toHaveLength(1)
     expect(providers.find(p => p.id === 'myendpoint')).toMatchObject({
       baseUrl: 'https://my.api.com/v1',
     })
   })
 
-  test('user provider with same id as default replaces the default', async () => {
-    const overrideCerebras = {
-      id: 'cerebras',
-      kind: 'openai-compat',
-      baseUrl: 'https://custom-cerebras.example.com/v1',
-      apiKeyEnv: 'CEREBRAS_API_KEY',
-      defaultModel: 'llama-3.3-70b',
-      compatRule: 'cerebras',
-    }
-    writeFileSync(
-      join(tmpDir, 'providers.json'),
-      JSON.stringify([overrideCerebras]),
-    )
-    const { loadProviders } = await import('../loader.js')
-    const providers = loadProviders()
-    // Still 4 providers (cerebras replaced, not added)
-    expect(providers).toHaveLength(4)
-    const cerebras = providers.find(p => p.id === 'cerebras')
-    expect(cerebras?.baseUrl).toBe('https://custom-cerebras.example.com/v1')
-  })
-
   test('findProvider returns undefined for unknown id', async () => {
-    const { findProvider, DEFAULT_PROVIDERS } = await import('../loader.js')
-    const result = findProvider('nonexistent', DEFAULT_PROVIDERS)
+    const { findProvider, loadProviders } = await import('../loader.js')
+    const result = findProvider('nonexistent', loadProviders())
     expect(result).toBeUndefined()
   })
 
   test('findProvider returns correct provider for known id', async () => {
-    const { findProvider, DEFAULT_PROVIDERS } = await import('../loader.js')
-    const deepseek = findProvider('deepseek', DEFAULT_PROVIDERS)
-    expect(deepseek?.baseUrl).toBe('https://api.deepseek.com/v1')
-    expect(deepseek?.compatRule).toBe('deepseek')
+    const { findProvider, loadProviders } = await import('../loader.js')
+    const result = findProvider('myendpoint', loadProviders())
+    expect(result).toBeUndefined() // not configured in this test's empty tmpdir
   })
 
   test('v1 bare-array file migrates and preserves apiKeyEnv', async () => {
@@ -137,7 +107,6 @@ describe('loadProviders', () => {
       kind: 'openai-compat',
       baseUrl: 'https://legacy.example.com/v1',
       apiKeyEnv: 'LEGACY_API_KEY',
-      defaultModel: 'legacy-model',
       compatRule: 'permissive',
     }
     writeFileSync(join(tmpDir, 'providers.json'), JSON.stringify([v1Provider]))
@@ -147,7 +116,6 @@ describe('loadProviders', () => {
     expect(legacy).toMatchObject({
       kind: 'openai-compat',
       apiKeyEnv: 'LEGACY_API_KEY',
-      defaultModel: 'legacy-model',
       compatRule: 'permissive',
     })
   })
@@ -159,7 +127,6 @@ describe('loadProviders', () => {
       baseUrl: 'https://generativelanguage.googleapis.com',
       apiKey: 'gemini-key',
       models: [{ id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' }],
-      defaultModel: 'gemini-2.5-pro',
       modelsFetchedAt: '2026-08-26T00:00:00.000Z',
     }
     writeFileSync(
@@ -172,7 +139,6 @@ describe('loadProviders', () => {
     expect(loaded).toMatchObject({
       kind: 'gemini',
       apiKey: 'gemini-key',
-      defaultModel: 'gemini-2.5-pro',
     })
     expect(loaded?.models).toEqual([
       { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
@@ -214,7 +180,7 @@ describe('loadProviders', () => {
     )
     const { loadProviders } = await import('../loader.js')
     const providers = loadProviders()
-    expect(providers.filter(p => p.kind === 'openai-compat')).toHaveLength(6) // 4 defaults + 2 custom
+    expect(providers.filter(p => p.kind === 'openai-compat')).toHaveLength(2)
     expect(providers.find(p => p.id === 'openai-a')?.apiKey).toBe('key-a')
     expect(providers.find(p => p.id === 'openai-b')?.apiKey).toBe('key-b')
     expect(providers.find(p => p.id === 'grok-1')?.kind).toBe('grok')
@@ -255,24 +221,25 @@ describe('saveProviders', () => {
     expect(mode).toBe(0o600)
   })
 
-  test('does not persist built-in defaults', async () => {
+  test('deduplicates by id (later entries win)', async () => {
     const { saveProviders, getProvidersFilePath } = await import('../loader.js')
-    saveProviders([])
-    const raw = JSON.parse(readFileSync(getProvidersFilePath(), 'utf-8'))
-    expect(raw.providers).toEqual([])
-  })
-
-  test('persists override of a built-in default (e.g. adding apiKey)', async () => {
-    const { saveProviders, getProvidersFilePath, DEFAULT_PROVIDERS } =
-      await import('../loader.js')
-    const cerebras = DEFAULT_PROVIDERS.find(p => p.id === 'cerebras')
-    saveProviders([{ ...cerebras!, apiKey: 'cerebras-key' }])
+    saveProviders([
+      {
+        id: 'custom',
+        kind: 'openai-compat',
+        baseUrl: 'https://old.example.com/v1',
+        apiKey: 'sk-1',
+      },
+      {
+        id: 'custom',
+        kind: 'openai-compat',
+        baseUrl: 'https://new.example.com/v1',
+        apiKey: 'sk-2',
+      },
+    ])
     const raw = JSON.parse(readFileSync(getProvidersFilePath(), 'utf-8'))
     expect(raw.providers).toHaveLength(1)
-    expect(raw.providers[0]).toMatchObject({
-      id: 'cerebras',
-      apiKey: 'cerebras-key',
-    })
+    expect(raw.providers[0].baseUrl).toBe('https://new.example.com/v1')
   })
 })
 
@@ -292,9 +259,8 @@ describe('addProvider / removeProvider / updateProvider', () => {
 
   test('addProvider throws on duplicate id', async () => {
     const { addProvider } = await import('../loader.js')
-    expect(() => addProvider({ ...custom, id: 'cerebras' })).toThrow(
-      'already exists',
-    )
+    addProvider(custom)
+    expect(() => addProvider(custom)).toThrow('already exists')
   })
 
   test('removeProvider removes a custom provider', async () => {

@@ -134,6 +134,13 @@ export type SelectProps<T> = {
   readonly defaultFocusValue?: T;
 
   /**
+   * Controlled focus value. When set, the select focuses this option on mount
+   * and whenever the value changes. Used to drive focus from a parent (e.g.
+   * when stitching focus across two adjacent Select components).
+   */
+  readonly focusValue?: T;
+
+  /**
    * Layout of the options.
    * - `compact` (default) tries to use one line per option
    * - `expanded` uses multiple lines and an empty line between options
@@ -207,6 +214,7 @@ export function Select<T>({
   onChange,
   onFocus,
   defaultFocusValue,
+  focusValue,
   layout = 'compact',
   disableSelection = false,
   inlineDescriptions = false,
@@ -268,7 +276,7 @@ export function Select<T>({
     onChange,
     onCancel,
     onFocus,
-    focusValue: defaultFocusValue,
+    focusValue: focusValue ?? defaultFocusValue,
   });
 
   useSelectInput({

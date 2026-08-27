@@ -50,7 +50,6 @@ export type ProviderModel = z.infer<typeof ProviderModelSchema>
  * - compatRule: selects CompatProfile from providerCompatMatrix
  *   (only meaningful for openai-compat)
  * - models: remotely fetched or manually added model list
- * - defaultModel: provider-level default model id
  * - modelsFetchedAt: ISO date of the last successful /models fetch
  */
 export const ProviderConfigSchema = z.object({
@@ -65,7 +64,6 @@ export const ProviderConfigSchema = z.object({
   apiKeyEnv: z.string().min(1).optional(),
   compatRule: CompatRuleSchema.optional(),
   models: z.array(ProviderModelSchema).optional(),
-  defaultModel: z.string().min(1).optional(),
   modelsFetchedAt: z.string().min(1).optional(),
 })
 

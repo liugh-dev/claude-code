@@ -57,7 +57,6 @@ describe('getProviderModelOptions (pure)', () => {
         id: 'cerebras',
         kind: 'openai-compat',
         baseUrl: 'https://api.cerebras.ai/v1',
-        defaultModel: 'llama-3.3-70b',
       },
       {
         id: 'opencode-go',

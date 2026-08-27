@@ -386,6 +386,12 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Per-tier model slot overrides. Values may be plain model IDs or cross-provider refs ("providerId:modelId" from providers.json). Checked before the environment-variable chain in getDefault*Model().',
         ),
+      recentModels: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Recently used model strings (most recent first), shown as the "recent" group in /model picker.',
+        ),
       // Enterprise allowlist of models
       availableModels: z
         .array(z.string())

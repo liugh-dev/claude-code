@@ -112,66 +112,40 @@ export function buildModelRef(providerId: string, modelId: string): string {
   return `${providerId}:${modelId}`
 }
 
-/** True when this provider id matches one of the built-in defaults. */
-export function isBuiltinProvider(
-  provider: ProviderConfig,
-  builtin: readonly ProviderConfig[],
-): boolean {
-  return builtin.some(b => b.id === provider.id)
-}
-
 /** Whether the provider has a resolvable API key (direct or env). */
 export function hasUsableKey(provider: ProviderConfig): boolean {
   return Boolean(resolveApiKey(provider))
 }
 
 /** Short summary used in list output. */
-export function formatProviderRow(
-  provider: ProviderConfig,
-  builtin: readonly ProviderConfig[],
-): {
+export function formatProviderRow(provider: ProviderConfig): {
   id: string
   kind: string
   baseUrl: string
   modelCount: string
-  defaultModel: string
   keyStatus: string
-  builtinBadge: string
 } {
-  const isBuiltin = isBuiltinProvider(provider, builtin)
   return {
     id: provider.id,
     kind: provider.kind,
     baseUrl: provider.baseUrl,
     modelCount: String(provider.models?.length ?? 0),
-    defaultModel: provider.defaultModel ?? '-',
     keyStatus: hasUsableKey(provider) ? '有' : '无',
-    builtinBadge: isBuiltin ? '(内置)' : '',
   }
 }
 
 /** Format the full provider table as plain text lines. */
 export function formatProvidersTable(
   providers: readonly ProviderConfig[],
-  builtin: readonly ProviderConfig[],
 ): string {
-  const rows = providers.map(p => formatProviderRow(p, builtin))
-  const headers = [
-    'id',
-    'kind',
-    'baseUrl',
-    '模型数',
-    'defaultModel',
-    'API key',
-    '内置',
-  ]
+  const rows = providers.map(p => formatProviderRow(p))
+  const headers = ['id', 'kind', 'baseUrl', '模型数', 'API key']
   const widths = rows.reduce(
     (acc, r) => ({
-      id: Math.max(acc.id, r.id.length + (r.builtinBadge ? 4 : 0)),
+      id: Math.max(acc.id, r.id.length),
       kind: Math.max(acc.kind, r.kind.length),
       baseUrl: Math.max(acc.baseUrl, r.baseUrl.length),
       modelCount: Math.max(acc.modelCount, r.modelCount.length),
-      defaultModel: Math.max(acc.defaultModel, r.defaultModel.length),
       keyStatus: Math.max(acc.keyStatus, r.keyStatus.length),
     }),
     {
@@ -179,8 +153,7 @@ export function formatProvidersTable(
       kind: headers[1]!.length,
       baseUrl: headers[2]!.length,
       modelCount: headers[3]!.length,
-      defaultModel: headers[4]!.length,
-      keyStatus: headers[5]!.length,
+      keyStatus: headers[4]!.length,
     },
   )
 
@@ -193,21 +166,17 @@ export function formatProvidersTable(
       pad(headers[1]!, widths.kind),
       pad(headers[2]!, widths.baseUrl),
       pad(headers[3]!, widths.modelCount),
-      pad(headers[4]!, widths.defaultModel),
-      pad(headers[5]!, widths.keyStatus),
-      headers[6]!,
+      pad(headers[4]!, widths.keyStatus),
     ].join('  '),
   )
   for (const r of rows) {
     lines.push(
       [
-        pad(r.id + (r.builtinBadge ? ' (内置)' : ''), widths.id),
+        pad(r.id, widths.id),
         pad(r.kind, widths.kind),
         pad(r.baseUrl, widths.baseUrl),
         pad(r.modelCount, widths.modelCount),
-        pad(r.defaultModel, widths.defaultModel),
         pad(r.keyStatus, widths.keyStatus),
-        r.builtinBadge,
       ].join('  '),
     )
   }

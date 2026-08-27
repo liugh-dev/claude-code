@@ -36,7 +36,7 @@ describe('ProviderConfigSchema', () => {
     expect(result.success).toBe(false)
   })
 
-  test('compatRule/defaultModel/models/apiKey/apiKeyEnv are optional', () => {
+  test('compatRule/models/apiKey/apiKeyEnv are optional', () => {
     const result = ProviderConfigSchema.safeParse({
       id: 'minimal',
       kind: 'openai-compat',
@@ -45,7 +45,6 @@ describe('ProviderConfigSchema', () => {
     expect(result.success).toBe(true)
     if (result.success) {
       expect(result.data.compatRule).toBeUndefined()
-      expect(result.data.defaultModel).toBeUndefined()
       expect(result.data.models).toBeUndefined()
       expect(result.data.apiKey).toBeUndefined()
       expect(result.data.apiKeyEnv).toBeUndefined()
@@ -62,7 +61,6 @@ describe('ProviderConfigSchema', () => {
       apiKeyEnv: 'FULL_API_KEY',
       compatRule: 'permissive',
       models: [{ id: 'm1' }, { id: 'm2', name: 'Model 2' }],
-      defaultModel: 'm1',
       modelsFetchedAt: '2026-08-26T00:00:00.000Z',
     })
     expect(result.success).toBe(true)

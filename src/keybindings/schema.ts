@@ -154,6 +154,8 @@ export const KEYBINDING_ACTIONS = [
   'modelPicker:decreaseEffort',
   'modelPicker:increaseEffort',
   'modelPicker:toggle1M',
+  'modelPicker:toggleSlot',
+  'modelPicker:openList',
   // Effort panel actions (slash /effort without args)
   'effortPanel:decrease',
   'effortPanel:increase',

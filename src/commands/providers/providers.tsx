@@ -5,13 +5,7 @@ import { Box, Dialog, LoadingState, Text, useKeybinding } from '@anthropic/ink';
 import { Select } from '../../components/CustomSelect/index.js';
 import TextInput from '../../components/TextInput.js';
 import { COMMON_HELP_ARGS } from '../../constants/xml.js';
-import {
-  addProvider,
-  DEFAULT_PROVIDERS,
-  findProvider,
-  loadProviders,
-  removeProvider,
-} from '../../services/providerRegistry/loader.js';
+import { addProvider, findProvider, loadProviders, removeProvider } from '../../services/providerRegistry/loader.js';
 import { fetchProviderModels } from '../../services/providerRegistry/fetchModels.js';
 import type { CompatRule, ProviderConfig, ProviderKind } from '../../services/providerRegistry/types.js';
 import type { LocalJSXCommandCall, LocalJSXCommandOnDone } from '../../types/command.js';
@@ -37,7 +31,7 @@ function ListProviders({ onDone }: { onDone: LocalJSXCommandOnDone }): React.Rea
       });
       return;
     }
-    const table = formatProvidersTable(providers, DEFAULT_PROVIDERS);
+    const table = formatProvidersTable(providers);
     onDone(table, { display: 'system' });
     // onDone is stable across renders
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -56,7 +50,7 @@ function UseProvider({ args, onDone }: { args: string; onDone: LocalJSXCommandOn
     const modelId = parts[1];
 
     if (!providerId) {
-      onDone('用法: /providers use <provider-id> [model-id]', {
+      onDone('用法: /providers use <provider-id> <model-id>', {
         display: 'system',
       });
       return;
@@ -71,15 +65,14 @@ function UseProvider({ args, onDone }: { args: string; onDone: LocalJSXCommandOn
       return;
     }
 
-    const resolvedModel = modelId ?? provider.defaultModel;
-    if (!resolvedModel) {
-      onDone(`Provider "${providerId}" 未配置 defaultModel，请显式指定模型：/providers use ${providerId} <model-id>`, {
+    if (!modelId) {
+      onDone(`请显式指定模型：/providers use ${providerId} <model-id>`, {
         display: 'system',
       });
       return;
     }
 
-    const modelRef = buildModelRef(provider.id, resolvedModel);
+    const modelRef = buildModelRef(provider.id, modelId);
     const { error: writeError } = updateSettingsForSource('userSettings', {
       model: modelRef,
     });
@@ -137,15 +130,10 @@ function RemoveProvider({ args, onDone }: { args: string; onDone: LocalJSXComman
   }
 
   if (confirming) {
-    const isBuiltin = DEFAULT_PROVIDERS.some(p => p.id === confirming.id);
-    const warning = isBuiltin ? `\n注意："${confirming.id}" 是内置默认 provider，删除后会恢复为内置配置。` : '';
     return (
       <Dialog title={`删除 provider "${confirming.id}"?`} onCancel={() => onDone('已取消', { display: 'system' })}>
         <Box flexDirection="column" gap={1}>
-          <Text>
-            baseUrl: {confirming.baseUrl}
-            {warning && <Text color="error">{warning}</Text>}
-          </Text>
+          <Text>baseUrl: {confirming.baseUrl}</Text>
           <Select
             options={[
               { label: '删除', value: 'delete' },
@@ -192,7 +180,6 @@ type AddStep =
   | { name: 'fetching-models' }
   | { name: 'fetch-failed' }
   | { name: 'manual-models' }
-  | { name: 'select-default-model' }
   | { name: 'confirm' }
   | { name: 'saving' };
 
@@ -203,7 +190,6 @@ interface AddDraft {
   apiKey: string;
   compatRule?: CompatRule;
   models: string[];
-  defaultModel: string;
 }
 
 function AddProvider({ onDone }: { onDone: LocalJSXCommandOnDone }): React.ReactNode {
@@ -214,7 +200,6 @@ function AddProvider({ onDone }: { onDone: LocalJSXCommandOnDone }): React.React
     baseUrl: DEFAULT_BASE_URL['openai-compat'],
     apiKey: '',
     models: [],
-    defaultModel: '',
   });
   const [error, setError] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -295,7 +280,7 @@ function AddProvider({ onDone }: { onDone: LocalJSXCommandOnDone }): React.React
       setDraft(d => ({ ...d, models }));
       setFetchError(null);
       if (models.length > 0) {
-        setStep({ name: 'select-default-model' });
+        setStep({ name: 'confirm' });
       } else {
         setStep({ name: 'manual-models' });
       }
@@ -318,11 +303,6 @@ function AddProvider({ onDone }: { onDone: LocalJSXCommandOnDone }): React.React
     setError(null);
     setDraft(d => ({ ...d, models: ids }));
     setCursorOffset(0);
-    setStep({ name: 'select-default-model' });
-  }
-
-  function handleDefaultModelSelect(modelId: string): void {
-    setDraft(d => ({ ...d, defaultModel: modelId }));
     setStep({ name: 'confirm' });
   }
 
@@ -339,13 +319,13 @@ function AddProvider({ onDone }: { onDone: LocalJSXCommandOnDone }): React.React
       ...(draft.apiKey ? { apiKey: draft.apiKey } : {}),
       ...(draft.compatRule ? { compatRule: draft.compatRule } : {}),
       ...(draft.models.length > 0 ? { models: draft.models.map(id => ({ id })) } : {}),
-      ...(draft.defaultModel ? { defaultModel: draft.defaultModel } : {}),
       modelsFetchedAt: new Date().toISOString(),
     };
     try {
       addProvider(provider);
-      const ref = draft.defaultModel ? buildModelRef(draft.id, draft.defaultModel) : draft.id;
-      onDone(`已保存 provider "${draft.id}"。\n使用 /providers use ${ref} 切换模型。`, { display: 'system' });
+      onDone(`已保存 provider "${draft.id}"。\n使用 /providers use ${draft.id} <model-id> 切换模型。`, {
+        display: 'system',
+      });
     } catch (err) {
       onDone(`保存失败: ${err instanceof Error ? err.message : String(err)}`, { display: 'system' });
     }
@@ -459,18 +439,6 @@ function AddProvider({ onDone }: { onDone: LocalJSXCommandOnDone }): React.React
           />
         )}
 
-        {step.name === 'select-default-model' && (
-          <Box flexDirection="column" gap={1}>
-            <Text>选择默认模型（共 {draft.models.length} 个）：</Text>
-            <Select
-              options={draft.models.map(m => ({ label: m, value: m }))}
-              onChange={handleDefaultModelSelect}
-              onCancel={goCancel}
-              visibleOptionCount={Math.min(draft.models.length, 8)}
-            />
-          </Box>
-        )}
-
         {step.name === 'confirm' && (
           <Box flexDirection="column" gap={1}>
             <Text>确认添加以下 provider？</Text>
@@ -480,7 +448,6 @@ function AddProvider({ onDone }: { onDone: LocalJSXCommandOnDone }): React.React
               <Text>baseUrl: {draft.baseUrl}</Text>
               <Text>apiKey: {draft.apiKey ? '••••••••' : '(未设置)'}</Text>
               {draft.compatRule && <Text>compatRule: {draft.compatRule}</Text>}
-              <Text>defaultModel: {draft.defaultModel}</Text>
               <Text>模型数: {draft.models.length}</Text>
             </Box>
             <Select

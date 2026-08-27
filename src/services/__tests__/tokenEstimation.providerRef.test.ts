@@ -272,11 +272,24 @@ describe('countMessagesTokensWithAPI provider-ref routing', () => {
   })
 
   test('non-anthropic ref falls back to local estimation without API call', async () => {
-    // 'deepseek' is a built-in default provider (kind: openai-compat). The
-    // built-in credential gate in resolveModelRef requires the matching env
-    // apiKey for the ref to resolve.
-    process.env.DEEPSEEK_API_KEY = 'sk-deepseek-test'
-    process.env.ANTHROPIC_MODEL = 'deepseek:deepseek-chat'
+    // Registry entry written by the test (no built-in providers anymore) —
+    // an openai-compat provider is non-anthropic, so token counting must
+    // stay local instead of probing the Anthropic count_tokens endpoint.
+    writeFileSync(
+      join(tmpDir, 'providers.json'),
+      JSON.stringify({
+        version: 2,
+        providers: [
+          {
+            id: 'my-deepseek',
+            kind: 'openai-compat',
+            baseUrl: 'https://api.deepseek.com/v1',
+            apiKey: 'sk-deepseek-test',
+          },
+        ],
+      }),
+    )
+    process.env.ANTHROPIC_MODEL = 'my-deepseek:deepseek-chat'
     installFetchStub({ input_tokens: 42 })
 
     const { countMessagesTokensWithAPI } = await importRealTokenEstimation()

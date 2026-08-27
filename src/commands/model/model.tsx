@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import * as React from 'react';
 import type { CommandResultDisplay } from '../../commands.js';
-import { ModelPicker } from '../../components/ModelPicker.js';
+import { ModelSlotPicker } from '../../components/ModelSlotPicker.js';
 import { COMMON_HELP_ARGS, COMMON_INFO_ARGS } from '../../constants/xml.js';
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -27,86 +27,6 @@ import {
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js';
 import { validateModel } from '../../utils/model/validateModel.js';
 import { resolveModelRef } from '../../services/providerRegistry/modelRef.js';
-
-function ModelPickerWrapper({
-  onDone,
-}: {
-  onDone: (result?: string, options?: { display?: CommandResultDisplay }) => void;
-}): React.ReactNode {
-  const mainLoopModel = useAppState(s => s.mainLoopModel);
-  const mainLoopModelForSession = useAppState(s => s.mainLoopModelForSession);
-  const isFastMode = useAppState(s => s.fastMode);
-  const setAppState = useSetAppState();
-
-  function handleCancel(): void {
-    logEvent('tengu_model_command_menu', {
-      action: 'cancel' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    });
-    const displayModel = renderModelLabel(mainLoopModel);
-    onDone(`Kept model as ${chalk.bold(displayModel)}`, {
-      display: 'system',
-    });
-  }
-
-  function handleSelect(model: string | null, effort: EffortLevel | undefined): void {
-    logEvent('tengu_model_command_menu', {
-      action: model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      from_model: mainLoopModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      to_model: model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    });
-    setAppState(prev => ({
-      ...prev,
-      mainLoopModel: model,
-      mainLoopModelForSession: null,
-    }));
-
-    let message = `Set model to ${chalk.bold(renderModelLabel(model))}`;
-    if (effort !== undefined) {
-      message += ` with ${chalk.bold(effort)} effort`;
-    }
-
-    // Turn off fast mode if switching to unsupported model
-    let wasFastModeToggledOn;
-    if (isFastModeEnabled()) {
-      clearFastModeCooldown();
-      if (!isFastModeSupportedByModel(model) && isFastMode) {
-        setAppState(prev => ({
-          ...prev,
-          fastMode: false,
-        }));
-        wasFastModeToggledOn = false;
-        // Do not update fast mode in settings since this is an automatic downgrade
-      } else if (isFastModeSupportedByModel(model) && isFastModeAvailable() && isFastMode) {
-        message += ` · Fast mode ON`;
-        wasFastModeToggledOn = true;
-      }
-    }
-
-    if (isBilledAsExtraUsage(model, wasFastModeToggledOn === true, isOpus1mMergeEnabled())) {
-      message += ` · Billed as extra usage`;
-    }
-
-    if (wasFastModeToggledOn === false) {
-      // Fast mode was toggled off, show suffix after extra usage billing
-      message += ` · Fast mode OFF`;
-    }
-
-    onDone(message);
-  }
-
-  return (
-    <ModelPicker
-      initial={mainLoopModel}
-      sessionModel={mainLoopModelForSession}
-      onSelect={handleSelect}
-      onCancel={handleCancel}
-      isStandaloneCommand
-      showFastModeNotice={
-        isFastModeEnabled() && isFastMode && isFastModeSupportedByModel(mainLoopModel) && isFastModeAvailable()
-      }
-    />
-  );
-}
 
 function SetModelAndClose({
   args,
@@ -286,7 +206,7 @@ export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
     return <SetModelAndClose args={args} onDone={onDone} />;
   }
 
-  return <ModelPickerWrapper onDone={onDone} />;
+  return <ModelSlotPicker onDone={onDone} isStandaloneCommand />;
 };
 
 function renderModelLabel(model: string | null): string {

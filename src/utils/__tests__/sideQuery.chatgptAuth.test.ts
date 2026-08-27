@@ -509,23 +509,40 @@ describe('sideQuery provider-ref routing', () => {
   })
 
   test('openai-compat ref routes to the per-provider client pool', async () => {
-    // 'deepseek' is a built-in default provider (kind: openai-compat,
-    // apiKeyEnv: DEEPSEEK_API_KEY) — no providers.json needed.
-    process.env.DEEPSEEK_API_KEY = 'sk-deepseek-test'
+    // Registry entry written by the test (no built-in providers anymore) —
+    // an openai-compat provider with a direct apiKey.
+    writeFileSync(
+      join(refTmpDir, 'providers.json'),
+      JSON.stringify({
+        version: 2,
+        providers: [
+          {
+            id: 'my-deepseek',
+            kind: 'openai-compat',
+            baseUrl: 'https://api.deepseek.com/v1',
+            apiKey: 'sk-deepseek-test',
+          },
+        ],
+      }),
+    )
+    const { _invalidateProviderCache } = await import(
+      '../../services/providerRegistry/loader.js'
+    )
+    _invalidateProviderCache()
     const { sideQuery } = await import('../sideQuery.js')
 
     const result = await sideQuery({
       querySource: 'auto_mode',
       // A claude-* modelId proves env model mapping is skipped: the ref's
       // modelId must reach the provider verbatim.
-      model: 'deepseek:claude-haiku-4-5',
+      model: 'my-deepseek:claude-haiku-4-5',
       messages: [{ role: 'user', content: 'hi' }],
       tools: [classifierTool as never],
       tool_choice: { type: 'tool', name: 'classify_result' },
     })
 
     expect(getOpenAIClientForProviderCalls).toHaveLength(1)
-    expect(getOpenAIClientForProviderCalls[0]!.provider.id).toBe('deepseek')
+    expect(getOpenAIClientForProviderCalls[0]!.provider.id).toBe('my-deepseek')
     expect(getOpenAIClientForProviderCalls[0]!.provider.baseUrl).toBe(
       'https://api.deepseek.com/v1',
     )

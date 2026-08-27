@@ -56,9 +56,6 @@ export function switchProvider(
     // Shell snippet: export OPENAI_API_KEY=$CEREBRAS_API_KEY
     // We return the recommended export, but the actual value depends on user env.
   }
-  if (found.defaultModel) {
-    env['OPENAI_MODEL'] = found.defaultModel
-  }
 
   // Include the api key env var name so callers can construct the shell snippet.
   // We do NOT read process.env[found.apiKeyEnv] to avoid leaking the key.
@@ -125,7 +122,7 @@ export function buildShellExportBlock(result: SwitchProviderResult): string {
       '# OPENAI_API_KEY is read from ~/.claude/providers.json at runtime',
     )
   }
-  const model = env['OPENAI_MODEL'] ?? provider.defaultModel
+  const model = env['OPENAI_MODEL']
   if (model) {
     lines.push(`export OPENAI_MODEL=${model}`)
   }

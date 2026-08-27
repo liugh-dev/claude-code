@@ -10,65 +10,6 @@ import {
 } from './types.js'
 
 /**
- * The four built-in OpenAI-compat providers.
- *
- * These are used when providers.json is absent or contains no entries.
- * User-defined providers in ~/.claude/providers.json are merged on top
- * (they replace a built-in with the same id).
- */
-export const DEFAULT_PROVIDERS: ProviderConfig[] = [
-  {
-    id: 'cerebras',
-    kind: 'openai-compat',
-    baseUrl: 'https://api.cerebras.ai/v1',
-    apiKeyEnv: 'CEREBRAS_API_KEY',
-    defaultModel: 'llama-3.3-70b',
-    compatRule: 'cerebras',
-  },
-  {
-    id: 'groq',
-    kind: 'openai-compat',
-    baseUrl: 'https://api.groq.com/openai/v1',
-    apiKeyEnv: 'GROQ_API_KEY',
-    defaultModel: 'llama-3.3-70b-versatile',
-    compatRule: 'groq',
-  },
-  {
-    id: 'qwen',
-    kind: 'openai-compat',
-    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    apiKeyEnv: 'DASHSCOPE_API_KEY',
-    defaultModel: 'qwen-max',
-    compatRule: 'strict-openai',
-  },
-  {
-    id: 'deepseek',
-    kind: 'openai-compat',
-    baseUrl: 'https://api.deepseek.com/v1',
-    apiKeyEnv: 'DEEPSEEK_API_KEY',
-    defaultModel: 'deepseek-chat',
-    compatRule: 'deepseek',
-  },
-]
-
-const DEFAULT_PROVIDER_IDS: ReadonlySet<string> = new Set(
-  DEFAULT_PROVIDERS.map(p => p.id),
-)
-
-/**
- * Returns true when the given id matches a built-in default provider.
- * Used by resolveModelRef() to require explicit credentials before
- * routing a `builtin:model` cross-provider ref to the default endpoint.
- *
- * Does NOT consult providers.json — a user override of a built-in id
- * is still a "built-in id" by this check (the caller must combine it
- * with a user-file check to distinguish pure default vs overridden).
- */
-export function isBuiltinDefaultProviderId(id: string): boolean {
-  return DEFAULT_PROVIDER_IDS.has(id)
-}
-
-/**
  * Returns the path to the providers.json file in the Claude config directory.
  */
 export function getProvidersFilePath(): string {
@@ -133,14 +74,11 @@ function _notifyProvidersChanged(): void {
  * Load provider configurations.
  *
  * Strategy:
- * 1. Start with DEFAULT_PROVIDERS.
- * 2. If ~/.claude/providers.json exists, parse and validate it with Zod.
+ * 1. If ~/.claude/providers.json exists, parse and validate it with Zod.
  *    - v2 format: { version: 2, providers: [...] }
  *    - v1 format (bare array): auto-migrated — entries are treated as the
  *      v2 `providers` list. `apiKeyEnv` indirection is preserved.
- *    - Valid entries replace defaults with matching id; new ids are appended.
- *    - Corrupt/invalid file: log warning, return defaults only.
- * 3. Empty providers.json: return defaults.
+ * 2. No file / empty file / corrupt file: return [] (no providers configured).
  *
  * A1 fix: returns load diagnostics so callers (ProviderView) can surface errors.
  * J1 fix: memoized per-process; invalidated after saveProviders().
@@ -200,7 +138,7 @@ function _loadProvidersInternal(): {
   const filePath = getProvidersFilePath()
 
   if (!existsSync(filePath)) {
-    return { providers: [...DEFAULT_PROVIDERS] }
+    return { providers: [] }
   }
 
   // Permission audit: providers.json may contain apiKey material. If the file
@@ -217,33 +155,15 @@ function _loadProvidersInternal(): {
     logError(new Error(parseError))
   }
 
-  if (userProviders === null) {
-    return {
-      providers: [...DEFAULT_PROVIDERS],
-      error: permissionWarning
-        ? `${permissionWarning}; ${parseError}`
-        : parseError,
-    }
-  }
-
-  if (userProviders.length === 0) {
+  if (userProviders === null || userProviders.length === 0) {
     return permissionWarning
-      ? { providers: [...DEFAULT_PROVIDERS], error: permissionWarning }
-      : { providers: [...DEFAULT_PROVIDERS] }
-  }
-
-  // Merge: user entries override defaults with same id; new ids are appended.
-  const merged = new Map<string, ProviderConfig>()
-  for (const p of DEFAULT_PROVIDERS) {
-    merged.set(p.id, p)
-  }
-  for (const p of userProviders) {
-    merged.set(p.id, p)
+      ? { providers: [], error: permissionWarning }
+      : { providers: [] }
   }
 
   return permissionWarning
-    ? { providers: Array.from(merged.values()), error: permissionWarning }
-    : { providers: Array.from(merged.values()) }
+    ? { providers: userProviders, error: permissionWarning }
+    : { providers: userProviders }
 }
 
 /**
@@ -367,35 +287,9 @@ export function findProvider(
 }
 
 /**
- * Deep-equal comparison for ProviderConfig objects, key-order independent.
- * Handles nested arrays/objects (models list) via JSON.stringify per value.
- * E4 fix: replaces JSON.stringify comparison which is key-order sensitive.
- */
-function providerConfigEqual(a: ProviderConfig, b: ProviderConfig): boolean {
-  const keysA = Object.keys(a).sort()
-  const keysB = Object.keys(b).sort()
-  if (keysA.length !== keysB.length) return false
-  for (const k of keysA) {
-    const va = a[k as keyof ProviderConfig]
-    const vb = b[k as keyof ProviderConfig]
-    if (va === vb) continue
-    if (
-      typeof va === 'object' &&
-      typeof vb === 'object' &&
-      JSON.stringify(va) === JSON.stringify(vb)
-    ) {
-      continue
-    }
-    return false
-  }
-  return true
-}
-
-/**
- * Write additional providers to ~/.claude/providers.json.
+ * Write providers to ~/.claude/providers.json.
  *
- * Only writes providers that are NOT already in DEFAULT_PROVIDERS (or the
- * existing file). If a provider with the same id exists, it is replaced.
+ * If a provider with the same id exists, it is replaced.
  *
  * Writes the v2 envelope ({ version: 2, providers: [...] }) and chmods the
  * file to 0600 since it may contain apiKey material.
@@ -411,37 +305,19 @@ function providerConfigEqual(a: ProviderConfig, b: ProviderConfig): boolean {
  *   umask combinations can still apply a wider mode after rename).
  *
  * C3 fix: uses atomic tmp+rename write.
- * E4 fix: uses key-order-independent deep equal for default comparison.
  * J1 fix: invalidates cache after write.
  *
- * Returns the final merged list that was written.
+ * Returns the list that was written.
  */
 export function saveProviders(providers: ProviderConfig[]): ProviderConfig[] {
   const filePath = getProvidersFilePath()
 
-  // Build merged list (providers override defaults by id)
+  // Deduplicate by id (later entries win)
   const merged = new Map<string, ProviderConfig>()
-  for (const p of DEFAULT_PROVIDERS) {
-    merged.set(p.id, p)
-  }
   for (const p of providers) {
     merged.set(p.id, p)
   }
-
-  // Only persist non-default providers (defaults are always built in)
-  const toWrite: ProviderConfig[] = []
-  for (const [id, p] of merged) {
-    const isDefault = DEFAULT_PROVIDERS.some(d => d.id === id)
-    if (!isDefault) {
-      toWrite.push(p)
-    } else {
-      // E4: If user overrode a default, persist the override (key-order-independent compare)
-      const defaultEntry = DEFAULT_PROVIDERS.find(d => d.id === id)
-      if (defaultEntry && !providerConfigEqual(defaultEntry, p)) {
-        toWrite.push(p)
-      }
-    }
-  }
+  const toWrite = Array.from(merged.values())
 
   // C3: atomic write — tmp file + rename prevents lost-update on concurrent save.
   // The tmp file lives next to the destination (see atomicWriteJson) so

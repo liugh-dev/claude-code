@@ -204,7 +204,6 @@ import chrome from './commands/chrome/index.js'
 import stickers from './commands/stickers/index.js'
 import advisor from './commands/advisor.js'
 import autonomy from './commands/autonomy.js'
-import provider from './commands/provider.js'
 import providers from './commands/providers/index.js'
 import { logError } from './utils/log.js'
 import { toError } from './utils/errors.js'
@@ -310,7 +309,6 @@ const COMMANDS = memoize((): Command[] => [
   localVaultCommand,
   localMemoryCommand,
   autonomy,
-  provider,
   providers,
   artifacts,
   agents,

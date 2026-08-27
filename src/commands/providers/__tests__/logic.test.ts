@@ -4,20 +4,18 @@ import {
   buildModelRef,
   formatProviderRow,
   formatProvidersTable,
-  isBuiltinProvider,
   parseCompatRule,
   parseProviderKind,
   validateBaseUrl,
   validateProviderId,
 } from '../logic.js'
 
-const BUILTIN: ProviderConfig[] = [
+const EXISTING: ProviderConfig[] = [
   {
     id: 'cerebras',
     kind: 'openai-compat',
     baseUrl: 'https://api.cerebras.ai/v1',
     apiKeyEnv: 'CEREBRAS_API_KEY',
-    defaultModel: 'llama-3.3-70b',
     compatRule: 'cerebras',
   },
 ]
@@ -28,7 +26,6 @@ const CUSTOM: ProviderConfig = {
   baseUrl: 'https://my.example.com/v1',
   apiKey: 'sk-test',
   models: [{ id: 'm1' }, { id: 'm2' }],
-  defaultModel: 'm1',
 }
 
 describe('validateProviderId', () => {
@@ -57,7 +54,7 @@ describe('validateProviderId', () => {
   })
 
   test('rejects duplicate id', () => {
-    expect(validateProviderId('cerebras', BUILTIN)).toBeTruthy()
+    expect(validateProviderId('cerebras', EXISTING)).toBeTruthy()
   })
 })
 
@@ -89,56 +86,36 @@ describe('buildModelRef', () => {
   })
 })
 
-describe('isBuiltinProvider', () => {
-  test('returns true for built-in id', () => {
-    expect(isBuiltinProvider(BUILTIN[0]!, BUILTIN)).toBe(true)
-  })
-
-  test('returns false for custom id', () => {
-    expect(isBuiltinProvider(CUSTOM, BUILTIN)).toBe(false)
-  })
-})
-
 describe('formatProviderRow', () => {
-  test('formats builtin provider with 内置 badge', () => {
-    const row = formatProviderRow(BUILTIN[0]!, BUILTIN)
+  test('formats provider with env-var key as 有', () => {
+    const row = formatProviderRow(EXISTING[0]!)
     expect(row.id).toBe('cerebras')
-    expect(row.builtinBadge).toBe('(内置)')
     expect(row.modelCount).toBe('0')
   })
 
   test('formats custom provider with key status', () => {
-    const row = formatProviderRow(CUSTOM, BUILTIN)
+    const row = formatProviderRow(CUSTOM)
     expect(row.id).toBe('my-openai')
     expect(row.keyStatus).toBe('有')
     expect(row.modelCount).toBe('2')
-    expect(row.defaultModel).toBe('m1')
-    expect(row.builtinBadge).toBe('')
   })
 
   test('formats custom provider without key as 无', () => {
     const noKey: ProviderConfig = { ...CUSTOM, apiKey: undefined }
-    const row = formatProviderRow(noKey, BUILTIN)
+    const row = formatProviderRow(noKey)
     expect(row.keyStatus).toBe('无')
   })
 })
 
 describe('formatProvidersTable', () => {
   test('produces header + rows', () => {
-    const table = formatProvidersTable([...BUILTIN, CUSTOM], BUILTIN)
+    const table = formatProvidersTable([...EXISTING, CUSTOM])
     const lines = table.split('\n')
     expect(lines.length).toBe(1 + 2)
     expect(lines[0]).toContain('id')
     expect(lines[0]).toContain('kind')
     expect(lines[1]).toContain('cerebras')
     expect(lines[2]).toContain('my-openai')
-  })
-
-  test('marks builtin rows with 内置', () => {
-    const table = formatProvidersTable([...BUILTIN, CUSTOM], BUILTIN)
-    const lines = table.split('\n')
-    expect(lines[1]).toContain('(内置)')
-    expect(lines[2]).not.toContain('(内置)')
   })
 })
 
